@@ -32,7 +32,13 @@
 
   "observability": {
     "enabled": true
-  }
+  },
+
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "the-pantries.com", "custom_domain": true }
+  ]
 
   // Secrets are NOT stored here. Set them once with:
   //   npx wrangler secret put ANTHROPIC_API_KEY
