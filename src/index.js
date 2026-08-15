@@ -27,6 +27,8 @@
  *   DELETE /api/cookbooks/:id        delete (recipes survive, link cleared)
  *   POST   /api/cookbooks/:id/files  upload a photo or scanned file
  *   POST   /api/cookbook-files/:id/cover   make photo the book's cover
+ *   POST   /api/photos/:id/focal        set which part of a photo shows when cropped
+ *   POST   /api/cookbook-files/:id/focal   same, for book photos
  *   DELETE /api/cookbook-files/:id   delete a photo or file
  *   POST   /api/scan                 photo -> structured recipe (Anthropic vision)
  *   GET    /api/export               full JSON backup
@@ -132,7 +134,8 @@ async function loadRecipes(db) {
   push(ratings, 'ratings', c => ({
     id: c.id, stars: c.stars, comment: c.comment, date: c.date, ts: c.created_at }));
   push(photos, 'images', p => ({
-    id: p.id, url: `/photos/${p.r2_key}`, caption: p.caption, favorite: !!p.is_cover }));
+    id: p.id, url: `/photos/${p.r2_key}`, caption: p.caption, favorite: !!p.is_cover,
+    focalX: p.focal_x == null ? 50 : p.focal_x, focalY: p.focal_y == null ? 50 : p.focal_y }));
 
   return [...byId.values()];
 }
@@ -158,6 +161,8 @@ async function loadCookbooks(db) {
       url: (f.kind === 'photo' ? '/photos/' : '/files/') + f.r2_key,
       filename: f.filename, contentType: f.content_type,
       sizeBytes: f.size_bytes, favorite: !!f.is_cover,
+      focalX: f.focal_x == null ? 50 : f.focal_x,
+      focalY: f.focal_y == null ? 30 : f.focal_y,
     };
     (f.kind === 'photo' ? b.images : b.files).push(entry);
   }
@@ -595,11 +600,20 @@ export default {
       }
 
       /* --- photos --- */
-      const photoMatch = path.match(/^\/api\/photos\/([^/]+)(\/cover)?$/);
+      const photoMatch = path.match(/^\/api\/photos\/([^/]+)(\/cover|\/focal)?$/);
       if (photoMatch) {
         const pid = photoMatch[1];
         const row = await db.prepare('SELECT * FROM photos WHERE id=?').bind(pid).first();
         if (!row) return err('Photo not found', 404);
+
+        if (photoMatch[2] === '/focal' && method === 'POST') {
+          const b = await request.json();
+          const x = Math.min(100, Math.max(0, Number(b.x)));
+          const y = Math.min(100, Math.max(0, Number(b.y)));
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return err('Invalid focal point');
+          await db.prepare('UPDATE photos SET focal_x=?, focal_y=? WHERE id=?').bind(x, y, pid).run();
+          return json(await bootstrap(db));
+        }
 
         if (photoMatch[2] === '/cover' && method === 'POST') {
           await db.batch([
@@ -693,11 +707,21 @@ export default {
         }
       }
 
-      const bfMatch = path.match(/^\/api\/cookbook-files\/([^/]+)(\/cover)?$/);
+      const bfMatch = path.match(/^\/api\/cookbook-files\/([^/]+)(\/cover|\/focal)?$/);
       if (bfMatch) {
         const fid = bfMatch[1];
         const row = await db.prepare('SELECT * FROM cookbook_files WHERE id=?').bind(fid).first();
         if (!row) return err('File not found', 404);
+
+        if (bfMatch[2] === '/focal' && method === 'POST') {
+          const b = await request.json();
+          const x = Math.min(100, Math.max(0, Number(b.x)));
+          const y = Math.min(100, Math.max(0, Number(b.y)));
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return err('Invalid focal point');
+          await db.prepare('UPDATE cookbook_files SET focal_x=?, focal_y=? WHERE id=?')
+            .bind(x, y, fid).run();
+          return json(await bootstrap(db));
+        }
 
         if (bfMatch[2] === '/cover' && method === 'POST') {
           await db.batch([

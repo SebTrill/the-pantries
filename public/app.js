@@ -78,7 +78,7 @@ function downloadBackup(){ window.location.href = '/api/export'; }
 /* ============ STATE ============ */
 let state = {
   view:'home', currentRecipeId:null, currentBookId:null, editingBook:null,
-  bookSearch:'', detailTab:'ingredients', discoverIds:[],
+  bookSearch:'', bookRecipeSearch:'', detailTab:'ingredients', discoverIds:[],
   searchQuery:'', categoryFilter:'all', sortBy:'newest',
   subSearch:'', scale:{}, editing:null, starDraft:0,
   appliedSubs:{},        // recipeId -> { ingredientId: {ingredientName, substitute, notes} }
@@ -430,7 +430,10 @@ function viewHome(){
 
 /* ============ COOKBOOKS ============ */
 function openCookbook(id){
-  attemptNav(()=>{ state.view='cookbookDetail'; state.currentBookId=id; render(); });
+  attemptNav(()=>{
+    if(state.currentBookId!==id) state.bookRecipeSearch='';
+    state.view='cookbookDetail'; state.currentBookId=id; render();
+  });
 }
 function recipesInBook(id){ return recipes.filter(r=>r.cookbookId===id); }
 function fmtBytes(n){
@@ -465,8 +468,9 @@ function viewCookbooks(){
       return `<div class="rcard" onclick="openCookbook('${b.id}')">
         <button class="card-del no-print" title="Remove cookbook"
           onclick="event.stopPropagation(); confirmDeleteCookbook('${b.id}')">×</button>
-        <div class="thumb book-thumb">${cover?`<img src="${cover.url}" alt="${escA(b.title)}">`:b.emoji}
-          ${(b.images||[]).length>1?`<span class="photo-count">📷 ${b.images.length}</span>`:''}</div>
+        <div class="thumb book-thumb">${cover
+          ? `<img src="${cover.url}" alt="${escA(b.title)}" style="${focalStyle(cover)}">`
+          : b.emoji}</div>
         <div class="body">
           <h3>${esc(b.title)}</h3>
           ${b.author?`<div class="book-author">${esc(b.author)}</div>`:''}
@@ -478,6 +482,41 @@ function viewCookbooks(){
       </div>`;}).join('')}</div>`}`;
 }
 
+const BOOK_RECIPE_LIMIT = 10;
+function onBookRecipeSearch(el){
+  focusId='bookRecipeSearch'; focusPos=el.selectionStart;
+  state.bookRecipeSearch=el.value; renderMain();
+}
+/* Recipes linked to this book, searchable, capped so a big book doesn't
+   bury the rest of the page. */
+function renderBookRecipes(b, mine){
+  const q=(state.bookRecipeSearch||'').trim().toLowerCase();
+  const matched = q
+    ? mine.filter(r => relevanceScore(r,q) > 0)
+        .sort((a,c)=>relevanceScore(c,q)-relevanceScore(a,q))
+    : mine.slice().sort((a,c)=>c.timesCooked-a.timesCooked);
+  const shown = matched.slice(0, BOOK_RECIPE_LIMIT);
+  const hidden = matched.length - shown.length;
+  return `
+    <div class="section-head"><h2>🍳 Recipes From This Book</h2>
+      <span class="subtle" style="margin:0;">${mine.length} linked</span></div>
+    ${mine.length > 4 ? `<div class="controls no-print" style="margin-bottom:14px;">
+      <div class="search-wrap"><span class="sicon">🔍</span>
+        <input id="bookRecipeSearch" type="text"
+          placeholder="Search this book's recipes by name, ingredient, or tag..."
+          value="${escA(state.bookRecipeSearch||'')}" oninput="onBookRecipeSearch(this)"></div>
+    </div>` : ''}
+    ${mine.length === 0
+      ? `<div class="empty">No recipes linked yet. Open a recipe, hit Edit, and choose this book
+          under "From a cookbook?".</div>`
+      : shown.length === 0
+        ? `<div class="empty">Nothing in this book matches "${esc(state.bookRecipeSearch)}".</div>`
+        : `<div class="grid">${shown.map(recipeCard).join('')}</div>
+           ${hidden > 0 ? `<div class="subtle" style="margin-top:12px;text-align:center;">
+             Showing ${shown.length} of ${matched.length} — ${q?'refine your search':'search above'} to narrow it down.
+           </div>` : ''}`}`;
+}
+
 function viewCookbookDetail(){
   const b=cookbooks.find(x=>x.id===state.currentBookId);
   if(!b) return `<div class="empty">Cookbook not found.</div>`;
@@ -487,13 +526,16 @@ function viewCookbookDetail(){
   return `
     <button class="back no-print" onclick="goto('cookbooks')">← Back to cookbooks</button>
     <div class="book-head">
-      <div class="book-cover">${cover?`<img src="${cover.url}" alt="${escA(b.title)}">`
-        :`<div class="book-cover-blank">${b.emoji}</div>`}</div>
+      <div class="book-cover">${cover
+        ? `<img src="${cover.url}" alt="${escA(b.title)}" style="${focalStyle(cover)}">
+           <button class="hero-adjust no-print" onclick="openFocalEditor('book','${cover.id}')"
+             title="Choose which part of the cover shows">⤧</button>`
+        : `<div class="book-cover-blank">${b.emoji}</div>`}</div>
       <div style="flex:1;min-width:240px;">
         <h1 class="title" style="font-size:26px;">${esc(b.title)}</h1>
         ${b.author?`<p class="subtle" style="margin:2px 0 14px;font-size:15px;">${esc(b.author)}</p>`:''}
-        ${facts.length?`<table class="facts">${facts.map(f=>
-          `<tr><th>${f[0]}</th><td>${esc(f[1])}</td></tr>`).join('')}</table>`:''}
+        ${facts.length?`<dl class="facts">${facts.map(f=>
+          `<dt>${f[0]}</dt><dd>${esc(f[1])}</dd>`).join('')}</dl>`:''}
         <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;" class="no-print">
           <button class="icon-btn" onclick="startEditCookbook('${b.id}')">✏️ Edit details</button>
           <button class="icon-btn" onclick="window.print()">🖨️ Print</button>
@@ -504,11 +546,7 @@ function viewCookbookDetail(){
     ${b.notes?`<div class="section-head"><h2>📝 Notes</h2></div>
       <div class="notes-body">${esc(b.notes).replace(/\n/g,'<br>')}</div>`:''}
 
-    <div class="section-head"><h2>🍳 Recipes From This Book</h2>
-      <span class="subtle" style="margin:0;">${mine.length} linked</span></div>
-    ${mine.length?`<div class="grid">${mine.map(recipeCard).join('')}</div>`
-      :`<div class="empty">No recipes linked yet. Open a recipe, hit Edit, and choose this book
-        under "From a cookbook?".</div>`}
+    ${renderBookRecipes(b, mine)}
 
     <div class="section-head"><h2>📷 Photos</h2>
       <span class="subtle" style="margin:0;">${(b.images||[]).length} photo${(b.images||[]).length!==1?'s':''}${(b.images||[]).length?' · ★ marks the cover':''}</span></div>
@@ -516,8 +554,9 @@ function viewCookbookDetail(){
       <div class="photo ${im.favorite?'is-cover':''}">
         <img src="${im.url}" alt="${escA(im.filename||b.title)}">
         <div class="photo-actions no-print">
-          <button class="pbtn fav ${im.favorite?'on':''}" title="${im.favorite?'This is the cover':'Make this the cover'}"
-            onclick="setBookCover('${im.id}')">${im.favorite?'★':'☆'}</button>
+          <button class="pbtn fav ${im.favorite?'on':''}" title="${im.favorite?'Reposition this cover':'Make this the cover'}"
+            onclick="${im.favorite?`openFocalEditor('book','${im.id}')`:`setBookCover('${im.id}')`}">${im.favorite?'★':'☆'}</button>
+          ${im.favorite?`<button class="pbtn" title="Reposition" onclick="openFocalEditor('book','${im.id}')">⤧</button>`:''}
           <button class="pbtn del" title="Delete" onclick="confirmDeleteBookFile('${b.id}','${im.id}')">×</button>
         </div>
         ${im.favorite?`<span class="cover-badge">★ Cover</span>`:''}
@@ -700,8 +739,9 @@ function viewBrowse(){
 function recipeCard(r){
   return `<div class="rcard" onclick="openRecipe('${r.id}')">
     <button class="card-del no-print" title="Remove recipe" onclick="event.stopPropagation(); confirmDeleteRecipe('${r.id}')">×</button>
-    <div class="thumb">${coverImage(r)?`<img src="${coverImage(r).url}" alt="${escA(r.title)}">`:r.emoji}
-      ${r.images&&r.images.length>1?`<span class="photo-count">📷 ${r.images.length}</span>`:''}</div>
+    <div class="thumb">${coverImage(r)
+      ? `<img src="${coverImage(r).url}" alt="${escA(r.title)}" style="${focalStyle(coverImage(r))}">`
+      : r.emoji}</div>
     <div class="body">
       <div>${r.categories.map(c=>`<span class="badge">${esc(c)}</span>`).join('')}</div>
       <h3>${esc(r.title)}</h3>
@@ -761,7 +801,9 @@ function viewDetail(){
   const cover=coverImage(r);
   return `
     <button class="back no-print" onclick="goto('browse')">← Back to recipes</button>
-    ${cover?`<div class="hero"><img src="${cover.url}" alt="${escA(r.title)}"></div>`:''}
+    ${cover?`<div class="hero"><img src="${cover.url}" alt="${escA(r.title)}" style="${focalStyle(cover)}">
+      <button class="hero-adjust no-print" onclick="openFocalEditor('recipe','${cover.id}')"
+        title="Choose which part of the photo shows">⤧ Reposition</button></div>`:''}
     <div class="detail-head">
       <div>
         <div>${r.categories.map(c=>`<span class="badge">${esc(c)}</span>`).join('')}</div>
@@ -840,6 +882,93 @@ function renderSubTab(r,pairs,applied){
       </div>`;
     }).join('')}`;
 }
+/* ---- image focal point ----
+ * Cropped covers use object-position so you choose what stays in frame
+ * (a book's title, a dish rather than the tablecloth) without touching the file.
+ */
+function focalStyle(img){
+  if(!img) return '';
+  const x = img.focalX == null ? 50 : img.focalX;
+  const y = img.focalY == null ? 50 : img.focalY;
+  return `object-position:${x}% ${y}%;`;
+}
+function findImage(kind, id){
+  if(kind==='recipe'){
+    for(const r of recipes){ const m=(r.images||[]).find(i=>i.id===id); if(m) return m; }
+  } else {
+    for(const b of cookbooks){ const m=(b.images||[]).find(i=>i.id===id); if(m) return m; }
+  }
+  return null;
+}
+let focalDraft = null;
+function openFocalEditor(kind, id){
+  const img = findImage(kind, id);
+  if(!img) return;
+  focalDraft = { kind, id, url: img.url,
+    x: img.focalX == null ? 50 : img.focalX,
+    y: img.focalY == null ? 50 : img.focalY };
+  renderFocalEditor();
+}
+function renderFocalEditor(){
+  const d = focalDraft;
+  if(!d){ closeModal(); return; }
+  const root = document.getElementById('modalRoot');
+  root.className = 'show';
+  root.innerHTML = `<div class="modal" style="max-width:600px;">
+    <h3>Reposition image</h3>
+    <div class="mbody">
+      <p style="margin:0 0 12px;">Click or drag on the photo to choose what stays in view when it's
+      cropped. The preview underneath shows exactly how it will appear.</p>
+      <div class="focal-pick" id="focalPick">
+        <img src="${d.url}" alt="" draggable="false">
+        <div class="focal-dot" id="focalDot" style="left:${d.x}%;top:${d.y}%;"></div>
+      </div>
+      <div class="focal-preview-label">Preview</div>
+      <div class="focal-preview ${d.kind==='book'?'as-book':'as-hero'}">
+        <img id="focalPreview" src="${d.url}" alt="" style="object-position:${d.x}% ${d.y}%;">
+      </div>
+    </div>
+    <div class="mbtns">
+      <button class="icon-btn" onclick="closeFocalEditor()">Cancel</button>
+      <button class="icon-btn" onclick="setFocalFromEditor(50,50)">Recentre</button>
+      <button class="icon-btn primary" onclick="saveFocal()">Save position</button>
+    </div>
+  </div>`;
+  const pick = document.getElementById('focalPick');
+  const move = (ev)=>{
+    const rect = pick.getBoundingClientRect();
+    const pt = ev.touches ? ev.touches[0] : ev;
+    const x = Math.min(100, Math.max(0, ((pt.clientX - rect.left)/rect.width)*100));
+    const y = Math.min(100, Math.max(0, ((pt.clientY - rect.top)/rect.height)*100));
+    setFocalFromEditor(x, y);
+  };
+  let dragging = false;
+  pick.addEventListener('mousedown', e=>{ dragging=true; move(e); e.preventDefault(); });
+  window.addEventListener('mousemove', e=>{ if(dragging) move(e); });
+  window.addEventListener('mouseup', ()=>{ dragging=false; });
+  pick.addEventListener('touchstart', e=>{ move(e); }, {passive:true});
+  pick.addEventListener('touchmove', e=>{ move(e); }, {passive:true});
+}
+function setFocalFromEditor(x,y){
+  if(!focalDraft) return;
+  focalDraft.x = x; focalDraft.y = y;
+  const dot = document.getElementById('focalDot');
+  const prev = document.getElementById('focalPreview');
+  if(dot){ dot.style.left = x+'%'; dot.style.top = y+'%'; }
+  if(prev){ prev.style.objectPosition = `${x}% ${y}%`; }
+}
+function closeFocalEditor(){ focalDraft = null; closeModal(); }
+async function saveFocal(){
+  const d = focalDraft;
+  if(!d) return;
+  const path = d.kind==='recipe' ? '/api/photos/'+d.id+'/focal' : '/api/cookbook-files/'+d.id+'/focal';
+  focalDraft = null; closeModal();
+  try{
+    await apiJSON(path,'POST',{x:Math.round(d.x*10)/10, y:Math.round(d.y*10)/10});
+    render(); toast('Image repositioned.');
+  }catch(e){ apiError(e); }
+}
+
 function bookById(id){ return cookbooks.find(b=>b.id===id) || null; }
 function bookCover(b){ return (b.images||[]).find(i=>i.favorite) || (b.images||[])[0] || null; }
 
@@ -871,8 +1000,9 @@ function renderPhotoSection(r){
       <div class="photo ${im.favorite?'is-cover':''}">
         <img src="${im.url}" alt="${escA(im.caption||r.title)}">
         <div class="photo-actions no-print">
-          <button class="pbtn fav ${im.favorite?'on':''}" title="${im.favorite?'This is the cover photo':'Make this the cover photo'}"
-            onclick="setCoverImage('${r.id}','${im.id}')">${im.favorite?'★':'☆'}</button>
+          <button class="pbtn fav ${im.favorite?'on':''}" title="${im.favorite?'Reposition this cover photo':'Make this the cover photo'}"
+            onclick="${im.favorite?`openFocalEditor('recipe','${im.id}')`:`setCoverImage('${r.id}','${im.id}')`}">${im.favorite?'★':'☆'}</button>
+          ${im.favorite?`<button class="pbtn" title="Reposition" onclick="openFocalEditor('recipe','${im.id}')">⤧</button>`:''}
           <button class="pbtn del no-print" title="Delete photo" onclick="confirmDeletePhoto('${r.id}','${im.id}')">×</button>
         </div>
         ${im.favorite?`<span class="cover-badge">★ Cover</span>`:''}

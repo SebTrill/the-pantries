@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS photos (
   r2_key     TEXT NOT NULL,
   caption    TEXT NOT NULL DEFAULT '',
   is_cover   INTEGER NOT NULL DEFAULT 0,
+  focal_x    REAL NOT NULL DEFAULT 50,
+  focal_y    REAL NOT NULL DEFAULT 50,
   created_at INTEGER NOT NULL
 );
 
@@ -111,6 +113,8 @@ CREATE TABLE IF NOT EXISTS cookbook_files (
   size_bytes   INTEGER NOT NULL DEFAULT 0,
   kind         TEXT NOT NULL DEFAULT 'file',
   is_cover     INTEGER NOT NULL DEFAULT 0,
+  focal_x      REAL NOT NULL DEFAULT 50,
+  focal_y      REAL NOT NULL DEFAULT 30,
   created_at   INTEGER NOT NULL
 );
 
