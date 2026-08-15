@@ -19,7 +19,7 @@
       "binding": "DB",
       "database_name": "pantries-db",
       // Replaced with the real id at deploy time by `wrangler d1 create pantries-db`
-      "database_id": "PLACEHOLDER_DATABASE_ID"
+      "database_id": "4595c016-f5f0-4cc6-b629-9ae4e92dcc62"
     }
   ],
 
