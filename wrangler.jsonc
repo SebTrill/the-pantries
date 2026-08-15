@@ -1,0 +1,46 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "the-pantries",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+
+  // Every request goes through the Worker first so the password gate can protect
+  // the whole site, not just the API. The Worker hands non-API paths straight to
+  // ASSETS, and unknown paths return index.html so the app handles its own routing.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pantries-db",
+      // Replaced with the real id at deploy time by `wrangler d1 create pantries-db`
+      "database_id": "PLACEHOLDER_DATABASE_ID"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "PHOTOS",
+      "bucket_name": "pantries-photos"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+
+  // Secrets are NOT stored here. Set them once with:
+  //   npx wrangler secret put ANTHROPIC_API_KEY
+  //
+  // STEP 2 of deploying: once the-pantries.com is registered and active in your
+  // Cloudflare account, uncomment BOTH lines below and run `npm run deploy` again.
+  // Until then the site lives at the-pantries.<your-subdomain>.workers.dev.
+  // ,"routes": [
+  //   { "pattern": "the-pantries.com", "custom_domain": true }
+  // ]
+}

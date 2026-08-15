@@ -1,0 +1,18 @@
+{
+  "name": "the-pantries",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The Pantries — a personal recipe site with search, scaling, substitutions, shopping list, photos and AI recipe scanning. Runs on Cloudflare Workers + D1 + R2.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute pantries-db --remote --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute pantries-db --local --file=./schema.sql",
+    "db:seed": "wrangler d1 execute pantries-db --remote --file=./seed.sql",
+    "db:seed:local": "wrangler d1 execute pantries-db --local --file=./seed.sql",
+    "backup": "wrangler d1 export pantries-db --remote --output=./backup.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
