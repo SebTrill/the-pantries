@@ -21,6 +21,13 @@
  *   PATCH  /api/shopping/:id         toggle/edit item
  *   DELETE /api/shopping/:id         remove item
  *   POST   /api/shopping/clear-checked
+ *   GET    /files/:key               download a scanned cookbook file from R2
+ *   POST   /api/cookbooks            create
+ *   PUT    /api/cookbooks/:id        update
+ *   DELETE /api/cookbooks/:id        delete (recipes survive, link cleared)
+ *   POST   /api/cookbooks/:id/files  upload a photo or scanned file
+ *   POST   /api/cookbook-files/:id/cover   make photo the book's cover
+ *   DELETE /api/cookbook-files/:id   delete a photo or file
  *   POST   /api/scan                 photo -> structured recipe (Anthropic vision)
  *   GET    /api/export               full JSON backup
  *   GET    /api/whoami               logged-in identity (via Cloudflare Access)
@@ -99,6 +106,9 @@ async function loadRecipes(db) {
       baseServings: r.base_servings,
       timesCooked: r.times_cooked,
       dateAdded: r.date_added,
+      notes: r.notes || '',
+      cookbookId: r.cookbook_id || null,
+      cookbookPage: r.cookbook_page || '',
       categories: [],
       tags: [],
       ingredients: [],
@@ -127,12 +137,40 @@ async function loadRecipes(db) {
   return [...byId.values()];
 }
 
+async function loadCookbooks(db) {
+  const [books, files] = await Promise.all([
+    db.prepare('SELECT * FROM cookbooks ORDER BY title COLLATE NOCASE').all(),
+    db.prepare('SELECT * FROM cookbook_files ORDER BY created_at').all(),
+  ]);
+  const byId = new Map();
+  for (const b of books.results) {
+    byId.set(b.id, {
+      id: b.id, title: b.title, author: b.author, publisher: b.publisher,
+      published: b.published, edition: b.edition, isbn: b.isbn,
+      notes: b.notes, emoji: b.emoji, images: [], files: [],
+    });
+  }
+  for (const f of files.results) {
+    const b = byId.get(f.cookbook_id);
+    if (!b) continue;
+    const entry = {
+      id: f.id,
+      url: (f.kind === 'photo' ? '/photos/' : '/files/') + f.r2_key,
+      filename: f.filename, contentType: f.content_type,
+      sizeBytes: f.size_bytes, favorite: !!f.is_cover,
+    };
+    (f.kind === 'photo' ? b.images : b.files).push(entry);
+  }
+  return [...byId.values()];
+}
+
 async function bootstrap(db) {
-  const [recipes, subs, shopping, cats] = await Promise.all([
+  const [recipes, subs, shopping, cats, cookbooks] = await Promise.all([
     loadRecipes(db),
     db.prepare('SELECT * FROM substitutions ORDER BY ingredient').all(),
     db.prepare('SELECT * FROM shopping_items ORDER BY created_at').all(),
     db.prepare('SELECT name FROM categories ORDER BY name').all(),
+    loadCookbooks(db),
   ]);
 
   const globalSubs = [];
@@ -150,6 +188,7 @@ async function bootstrap(db) {
 
   return {
     recipes,
+    cookbooks,
     globalSubs,
     allCategories: cats.results.map(c => c.name),
     shoppingList: shopping.results.map(s => ({
@@ -182,15 +221,22 @@ async function saveRecipe(db, body, existingId) {
   const baseServings = parseQty(body.baseServings) || 1;
   const dateAdded = body.dateAdded || new Date().toISOString().slice(0, 10);
 
+  const notes = String(body.notes || '').trim();
+  const cookbookId = body.cookbookId ? String(body.cookbookId) : null;
+  const cookbookPage = String(body.cookbookPage || '').trim();
+
   if (existingId) {
     await db.prepare(
-      `UPDATE recipes SET title=?, emoji=?, base_servings=?, updated_at=? WHERE id=?`
-    ).bind(title, emoji, baseServings, ts, id).run();
+      `UPDATE recipes SET title=?, emoji=?, base_servings=?, notes=?,
+                          cookbook_id=?, cookbook_page=?, updated_at=? WHERE id=?`
+    ).bind(title, emoji, baseServings, notes, cookbookId, cookbookPage, ts, id).run();
   } else {
     await db.prepare(
-      `INSERT INTO recipes (id,title,emoji,base_servings,times_cooked,date_added,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?)`
-    ).bind(id, title, emoji, baseServings, body.timesCooked || 0, dateAdded, ts, ts).run();
+      `INSERT INTO recipes (id,title,emoji,base_servings,times_cooked,date_added,
+                            notes,cookbook_id,cookbook_page,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(id, title, emoji, baseServings, body.timesCooked || 0, dateAdded,
+           notes, cookbookId, cookbookPage, ts, ts).run();
   }
 
   const catIds = await categoryIds(db, body.categories || []);
@@ -436,6 +482,22 @@ export default {
         return new Response(obj.body, { headers });
       }
 
+      // Scanned cookbook files download rather than render inline.
+      if (path.startsWith('/files/')) {
+        const key = decodeURIComponent(path.slice('/files/'.length));
+        const obj = await env.PHOTOS.get(key);
+        if (!obj) return new Response('Not found', { status: 404 });
+        const row = await db.prepare('SELECT filename FROM cookbook_files WHERE r2_key=?')
+          .bind(key).first();
+        const headers = new Headers();
+        obj.writeHttpMetadata(headers);
+        headers.set('etag', obj.httpEtag);
+        headers.set('cache-control', 'private, max-age=3600');
+        headers.set('content-disposition',
+          `attachment; filename="${(row && row.filename ? row.filename : 'download').replace(/"/g, '')}"`);
+        return new Response(obj.body, { headers });
+      }
+
       if (!path.startsWith('/api/')) {
         return env.ASSETS.fetch(request);
       }
@@ -555,6 +617,106 @@ export default {
               'SELECT id FROM photos WHERE recipe_id=? ORDER BY created_at LIMIT 1'
             ).bind(row.recipe_id).first();
             if (next) await db.prepare('UPDATE photos SET is_cover=1 WHERE id=?').bind(next.id).run();
+          }
+          return json(await bootstrap(db));
+        }
+      }
+
+      /* --- cookbooks --- */
+      if (path === '/api/cookbooks' && method === 'POST') {
+        const b = await request.json();
+        const title = String(b.title || '').trim();
+        if (!title) return err('A cookbook needs a title.');
+        const id = uid(), ts = now();
+        await db.prepare(
+          `INSERT INTO cookbooks (id,title,author,publisher,published,edition,isbn,notes,emoji,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(id, title, String(b.author || '').trim(), String(b.publisher || '').trim(),
+          String(b.published || '').trim(), String(b.edition || '').trim(),
+          String(b.isbn || '').trim(), String(b.notes || '').trim(),
+          b.emoji || '📕', ts, ts).run();
+        return json({ id, ...(await bootstrap(db)) }, 201);
+      }
+
+      const bookMatch = path.match(/^\/api\/cookbooks\/([^/]+)(\/.*)?$/);
+      if (bookMatch) {
+        const bid = bookMatch[1];
+        const bsub = bookMatch[2] || '';
+
+        if (!bsub && method === 'PUT') {
+          const b = await request.json();
+          const title = String(b.title || '').trim();
+          if (!title) return err('A cookbook needs a title.');
+          await db.prepare(
+            `UPDATE cookbooks SET title=?, author=?, publisher=?, published=?, edition=?,
+                                  isbn=?, notes=?, emoji=?, updated_at=? WHERE id=?`
+          ).bind(title, String(b.author || '').trim(), String(b.publisher || '').trim(),
+            String(b.published || '').trim(), String(b.edition || '').trim(),
+            String(b.isbn || '').trim(), String(b.notes || '').trim(),
+            b.emoji || '📕', now(), bid).run();
+          return json(await bootstrap(db));
+        }
+
+        if (!bsub && method === 'DELETE') {
+          const keys = await db.prepare('SELECT r2_key FROM cookbook_files WHERE cookbook_id=?')
+            .bind(bid).all();
+          await db.batch([
+            // recipes survive; they just stop pointing at a book
+            db.prepare("UPDATE recipes SET cookbook_id=NULL, cookbook_page='' WHERE cookbook_id=?").bind(bid),
+            db.prepare('DELETE FROM cookbook_files WHERE cookbook_id=?').bind(bid),
+            db.prepare('DELETE FROM cookbooks WHERE id=?').bind(bid),
+          ]);
+          ctx.waitUntil(Promise.all(keys.results.map(k => env.PHOTOS.delete(k.r2_key))));
+          return json(await bootstrap(db));
+        }
+
+        if (bsub === '/files' && method === 'POST') {
+          const form = await request.formData();
+          const file = form.get('file');
+          if (!file || typeof file === 'string') return err('No file uploaded');
+          const type = file.type || 'application/octet-stream';
+          const isPhoto = type.startsWith('image/');
+          const name = String(form.get('filename') || file.name || 'file');
+          const ext = (name.split('.').pop() || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8);
+          const key = `cookbooks/${bid}/${uid()}.${ext}`;
+          await env.PHOTOS.put(key, file.stream(), { httpMetadata: { contentType: type } });
+          const existing = await db.prepare(
+            "SELECT COUNT(*) AS n FROM cookbook_files WHERE cookbook_id=? AND kind='photo'"
+          ).bind(bid).first();
+          const isCover = isPhoto && existing && existing.n === 0 ? 1 : 0;
+          await db.prepare(
+            `INSERT INTO cookbook_files (id,cookbook_id,r2_key,filename,content_type,size_bytes,kind,is_cover,created_at)
+             VALUES (?,?,?,?,?,?,?,?,?)`
+          ).bind(uid(), bid, key, name, type, file.size || 0,
+            isPhoto ? 'photo' : 'file', isCover, now()).run();
+          return json(await bootstrap(db), 201);
+        }
+      }
+
+      const bfMatch = path.match(/^\/api\/cookbook-files\/([^/]+)(\/cover)?$/);
+      if (bfMatch) {
+        const fid = bfMatch[1];
+        const row = await db.prepare('SELECT * FROM cookbook_files WHERE id=?').bind(fid).first();
+        if (!row) return err('File not found', 404);
+
+        if (bfMatch[2] === '/cover' && method === 'POST') {
+          await db.batch([
+            db.prepare("UPDATE cookbook_files SET is_cover=0 WHERE cookbook_id=? AND kind='photo'")
+              .bind(row.cookbook_id),
+            db.prepare('UPDATE cookbook_files SET is_cover=1 WHERE id=?').bind(fid),
+          ]);
+          return json(await bootstrap(db));
+        }
+
+        if (method === 'DELETE') {
+          await db.prepare('DELETE FROM cookbook_files WHERE id=?').bind(fid).run();
+          ctx.waitUntil(env.PHOTOS.delete(row.r2_key));
+          if (row.is_cover) {
+            const next = await db.prepare(
+              "SELECT id FROM cookbook_files WHERE cookbook_id=? AND kind='photo' ORDER BY created_at LIMIT 1"
+            ).bind(row.cookbook_id).first();
+            if (next) await db.prepare('UPDATE cookbook_files SET is_cover=1 WHERE id=?')
+              .bind(next.id).run();
           }
           return json(await bootstrap(db));
         }

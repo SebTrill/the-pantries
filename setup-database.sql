@@ -2,8 +2,6 @@
 -- Every table uses ON DELETE CASCADE from recipes, so deleting a recipe
 -- cleans up its ingredients, steps, ratings, photos and links automatically.
 
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS recipes (
   id            TEXT PRIMARY KEY,
   title         TEXT NOT NULL,
@@ -11,9 +9,6 @@ CREATE TABLE IF NOT EXISTS recipes (
   base_servings REAL NOT NULL DEFAULT 4,
   times_cooked  INTEGER NOT NULL DEFAULT 0,
   date_added    TEXT NOT NULL,
-  notes         TEXT NOT NULL DEFAULT '',
-  cookbook_id   TEXT,
-  cookbook_page TEXT NOT NULL DEFAULT '',
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -85,35 +80,6 @@ CREATE TABLE IF NOT EXISTS photos (
   created_at INTEGER NOT NULL
 );
 
--- A shelf of cookbooks. Recipes optionally point at one via recipes.cookbook_id.
-CREATE TABLE IF NOT EXISTS cookbooks (
-  id         TEXT PRIMARY KEY,
-  title      TEXT NOT NULL,
-  author     TEXT NOT NULL DEFAULT '',
-  publisher  TEXT NOT NULL DEFAULT '',
-  published  TEXT NOT NULL DEFAULT '',
-  edition    TEXT NOT NULL DEFAULT '',
-  isbn       TEXT NOT NULL DEFAULT '',
-  notes      TEXT NOT NULL DEFAULT '',
-  emoji      TEXT NOT NULL DEFAULT '📕',
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-
--- Photos of a book and scanned files share one table.
--- kind='photo' renders in the gallery; kind='file' lists as a download.
-CREATE TABLE IF NOT EXISTS cookbook_files (
-  id           TEXT PRIMARY KEY,
-  cookbook_id  TEXT NOT NULL REFERENCES cookbooks(id) ON DELETE CASCADE,
-  r2_key       TEXT NOT NULL,
-  filename     TEXT NOT NULL DEFAULT '',
-  content_type TEXT NOT NULL DEFAULT '',
-  size_bytes   INTEGER NOT NULL DEFAULT 0,
-  kind         TEXT NOT NULL DEFAULT 'file',
-  is_cover     INTEGER NOT NULL DEFAULT 0,
-  created_at   INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS shopping_items (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -135,5 +101,23 @@ CREATE INDEX IF NOT EXISTS idx_subs_ingredient      ON substitutions(ingredient)
 CREATE INDEX IF NOT EXISTS idx_recipe_cats_cat      ON recipe_categories(category_id);
 CREATE INDEX IF NOT EXISTS idx_recipes_cooked       ON recipes(times_cooked DESC);
 CREATE INDEX IF NOT EXISTS idx_recipes_added        ON recipes(date_added DESC);
-CREATE INDEX IF NOT EXISTS idx_recipes_cookbook     ON recipes(cookbook_id);
-CREATE INDEX IF NOT EXISTS idx_cookbook_files_bk    ON cookbook_files(cookbook_id, kind);
+-- Starter data: a handful of common substitutions so the library isn't empty on day one.
+INSERT OR IGNORE INTO categories (name) VALUES
+ ('Breakfast'),('Lunch'),('Dinner'),('Dessert'),('Soup'),('Side'),('Snack'),('Drink'),('Vegetarian'),('Quick & Easy');
+
+INSERT INTO substitutions (id,recipe_id,ingredient,substitute,notes,created_at) VALUES
+ ('sub001',NULL,'Buttermilk','1 cup milk + 1 tbsp lemon juice','Let sit 5 minutes before using.',1),
+ ('sub002',NULL,'Egg','1 tbsp ground flaxseed + 3 tbsp water','Good for baking; let gel 5 minutes.',2),
+ ('sub003',NULL,'Butter','Coconut oil','Use a 1:1 ratio.',3),
+ ('sub004',NULL,'Heavy Cream','Evaporated milk','Slightly lighter texture.',4),
+ ('sub005',NULL,'Soy Sauce','Coconut aminos','Lower sodium, slightly sweeter.',5),
+ ('sub006',NULL,'Milk','Oat milk','Neutral flavor, works in most baking.',6),
+ ('sub007',NULL,'All-Purpose Flour','1:1 gluten-free baking flour','Best with a binder like xanthan gum.',7),
+ ('sub008',NULL,'Vegetable Oil','Avocado oil','High smoke point, good for stir-fry.',8),
+ ('sub009',NULL,'Brown Sugar','White sugar + 1 tbsp molasses','Per cup of sugar.',9),
+ ('sub010',NULL,'Fresh Basil','Dried basil','Use 1/3 the amount.',10),
+ ('sub011',NULL,'Vegetable Broth','Chicken broth','No longer vegetarian.',11),
+ ('sub012',NULL,'Garlic','Garlic powder','1/8 tsp powder per clove.',12),
+ ('sub013',NULL,'Sour Cream','Plain Greek yogurt','1:1, slightly tangier.',13),
+ ('sub014',NULL,'Cornstarch','2 tbsp all-purpose flour','Per 1 tbsp cornstarch.',14),
+ ('sub015',NULL,'White Sugar','Honey','Use 3/4 cup honey per cup sugar; reduce other liquid by 1/4 cup.',15);

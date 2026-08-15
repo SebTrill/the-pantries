@@ -2,6 +2,7 @@
 const uid = () => Math.random().toString(36).slice(2,9);
 
 let recipes = [];
+let cookbooks = [];
 let globalSubs = [];
 let allCategories = [];
 let shoppingList = [];
@@ -30,6 +31,7 @@ async function api(path, opts = {}, quiet = false){
 function applyState(st){
   if (!st) return;
   if (st.recipes) recipes = st.recipes;
+  if (st.cookbooks) cookbooks = st.cookbooks;
   if (st.globalSubs) globalSubs = st.globalSubs;
   if (st.allCategories) allCategories = st.allCategories;
   if (st.shoppingList) shoppingList = st.shoppingList;
@@ -75,7 +77,8 @@ function downloadBackup(){ window.location.href = '/api/export'; }
 
 /* ============ STATE ============ */
 let state = {
-  view:'home', currentRecipeId:null, detailTab:'ingredients', discoverIds:[],
+  view:'home', currentRecipeId:null, currentBookId:null, editingBook:null,
+  bookSearch:'', detailTab:'ingredients', discoverIds:[],
   searchQuery:'', categoryFilter:'all', sortBy:'newest',
   subSearch:'', scale:{}, editing:null, starDraft:0,
   appliedSubs:{},        // recipeId -> { ingredientId: {ingredientName, substitute, notes} }
@@ -299,6 +302,8 @@ function render(){
         <span class="ic">🏠</span> Home</button>
       <button class="navbtn ${['browse','detail','editRecipe'].includes(state.view)?'active':''}" onclick="goto('browse')">
         <span class="ic">📖</span> Browse Recipes<span class="count">${recipes.length}</span></button>
+      <button class="navbtn ${['cookbooks','cookbookDetail','editCookbook'].includes(state.view)?'active':''}" onclick="goto('cookbooks')">
+        <span class="ic">📚</span> Cookbooks${cookbooks.length?`<span class="count">${cookbooks.length}</span>`:''}</button>
       <button class="navbtn ${state.view==='substitutions'?'active':''}" onclick="goto('substitutions')">
         <span class="ic">🔁</span> Substitutions<span class="count">${globalSubs.length}</span></button>
       <button class="navbtn ${state.view==='shopping'?'active':''}" onclick="goto('shopping')">
@@ -317,7 +322,8 @@ function render(){
 function renderMain(){
   const m=document.getElementById('main');
   m.innerHTML = ({home:viewHome,browse:viewBrowse,detail:viewDetail,substitutions:viewSubstitutions,
-    shopping:viewShopping,editRecipe:viewEditRecipe,scanning:viewScanning}[state.view])();
+    shopping:viewShopping,editRecipe:viewEditRecipe,scanning:viewScanning,
+    cookbooks:viewCookbooks,cookbookDetail:viewCookbookDetail,editCookbook:viewEditCookbook}[state.view])();
   if(focusId){ const el=document.getElementById(focusId); if(el){ el.focus(); try{el.setSelectionRange(focusPos,focusPos);}catch(e){} } }
 }
 
@@ -421,6 +427,252 @@ function viewHome(){
     </div>`;
 }
 
+
+/* ============ COOKBOOKS ============ */
+function openCookbook(id){
+  attemptNav(()=>{ state.view='cookbookDetail'; state.currentBookId=id; render(); });
+}
+function recipesInBook(id){ return recipes.filter(r=>r.cookbookId===id); }
+function fmtBytes(n){
+  if(!n) return '';
+  if(n<1024) return n+' B';
+  if(n<1024*1024) return Math.round(n/1024)+' KB';
+  return (n/1024/1024).toFixed(1)+' MB';
+}
+function onBookSearch(el){ focusId='bookSearch'; focusPos=el.selectionStart; state.bookSearch=el.value; renderMain(); }
+
+function viewCookbooks(){
+  const q=state.bookSearch.trim().toLowerCase();
+  const list=cookbooks.filter(b=>!q ||
+    b.title.toLowerCase().includes(q) || (b.author||'').toLowerCase().includes(q) ||
+    (b.publisher||'').toLowerCase().includes(q));
+  return `
+    <div class="sec-head" style="margin-bottom:4px;">
+      <h1 class="title">Cookbooks</h1>
+      <button class="icon-btn primary no-print" onclick="startAddCookbook()">+ Add Cookbook</button>
+    </div>
+    <p class="subtle">${cookbooks.length} book${cookbooks.length!==1?'s':''} on the shelf</p>
+    ${cookbooks.length?`<div class="controls">
+      <div class="search-wrap"><span class="sicon">🔍</span>
+        <input id="bookSearch" type="text" placeholder="Search by title, author, or publisher..."
+          value="${escA(state.bookSearch)}" oninput="onBookSearch(this)"></div>
+    </div>`:''}
+    ${list.length===0?`<div class="empty">${cookbooks.length
+      ? `No cookbooks match "${esc(state.bookSearch)}".`
+      : 'No cookbooks yet. Add the books your recipes come from, and you can link recipes to them.'}</div>`
+    :`<div class="grid">${list.map(b=>{
+      const cover=bookCover(b), n=recipesInBook(b.id).length;
+      return `<div class="rcard" onclick="openCookbook('${b.id}')">
+        <button class="card-del no-print" title="Remove cookbook"
+          onclick="event.stopPropagation(); confirmDeleteCookbook('${b.id}')">×</button>
+        <div class="thumb book-thumb">${cover?`<img src="${cover.url}" alt="${escA(b.title)}">`:b.emoji}
+          ${(b.images||[]).length>1?`<span class="photo-count">📷 ${b.images.length}</span>`:''}</div>
+        <div class="body">
+          <h3>${esc(b.title)}</h3>
+          ${b.author?`<div class="book-author">${esc(b.author)}</div>`:''}
+          <div class="rmeta">
+            <span>${b.published?esc(b.published):'—'}</span>
+            <span>${n} recipe${n!==1?'s':''}</span>
+          </div>
+        </div>
+      </div>`;}).join('')}</div>`}`;
+}
+
+function viewCookbookDetail(){
+  const b=cookbooks.find(x=>x.id===state.currentBookId);
+  if(!b) return `<div class="empty">Cookbook not found.</div>`;
+  const cover=bookCover(b), mine=recipesInBook(b.id);
+  const facts=[['Author',b.author],['Publisher',b.publisher],['Published',b.published],
+               ['Edition',b.edition],['ISBN',b.isbn]].filter(f=>f[1]);
+  return `
+    <button class="back no-print" onclick="goto('cookbooks')">← Back to cookbooks</button>
+    <div class="book-head">
+      <div class="book-cover">${cover?`<img src="${cover.url}" alt="${escA(b.title)}">`
+        :`<div class="book-cover-blank">${b.emoji}</div>`}</div>
+      <div style="flex:1;min-width:240px;">
+        <h1 class="title" style="font-size:26px;">${esc(b.title)}</h1>
+        ${b.author?`<p class="subtle" style="margin:2px 0 14px;font-size:15px;">${esc(b.author)}</p>`:''}
+        ${facts.length?`<table class="facts">${facts.map(f=>
+          `<tr><th>${f[0]}</th><td>${esc(f[1])}</td></tr>`).join('')}</table>`:''}
+        <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;" class="no-print">
+          <button class="icon-btn" onclick="startEditCookbook('${b.id}')">✏️ Edit details</button>
+          <button class="icon-btn" onclick="window.print()">🖨️ Print</button>
+        </div>
+      </div>
+    </div>
+
+    ${b.notes?`<div class="section-head"><h2>📝 Notes</h2></div>
+      <div class="notes-body">${esc(b.notes).replace(/\n/g,'<br>')}</div>`:''}
+
+    <div class="section-head"><h2>🍳 Recipes From This Book</h2>
+      <span class="subtle" style="margin:0;">${mine.length} linked</span></div>
+    ${mine.length?`<div class="grid">${mine.map(recipeCard).join('')}</div>`
+      :`<div class="empty">No recipes linked yet. Open a recipe, hit Edit, and choose this book
+        under "From a cookbook?".</div>`}
+
+    <div class="section-head"><h2>📷 Photos</h2>
+      <span class="subtle" style="margin:0;">${(b.images||[]).length} photo${(b.images||[]).length!==1?'s':''}${(b.images||[]).length?' · ★ marks the cover':''}</span></div>
+    ${(b.images||[]).length?`<div class="photo-grid">${b.images.map(im=>`
+      <div class="photo ${im.favorite?'is-cover':''}">
+        <img src="${im.url}" alt="${escA(im.filename||b.title)}">
+        <div class="photo-actions no-print">
+          <button class="pbtn fav ${im.favorite?'on':''}" title="${im.favorite?'This is the cover':'Make this the cover'}"
+            onclick="setBookCover('${im.id}')">${im.favorite?'★':'☆'}</button>
+          <button class="pbtn del" title="Delete" onclick="confirmDeleteBookFile('${b.id}','${im.id}')">×</button>
+        </div>
+        ${im.favorite?`<span class="cover-badge">★ Cover</span>`:''}
+      </div>`).join('')}</div>`:''}
+    <label class="upload-zone no-print">
+      📁 ${(b.images||[]).length?'Add more photos':'Add photos of the book'} — click to choose
+      <input type="file" accept="image/*" multiple onchange="handleBookUpload(event,'${b.id}')">
+    </label>
+
+    <div class="section-head"><h2>📄 Scanned Files</h2>
+      <span class="subtle" style="margin:0;">${(b.files||[]).length} file${(b.files||[]).length!==1?'s':''}</span></div>
+    ${(b.files||[]).length?`<div class="file-list">${b.files.map(f=>`
+      <div class="file-row">
+        <span class="file-ico">${(f.contentType||'').includes('pdf')?'📕':'📄'}</span>
+        <div style="flex:1;min-width:0;">
+          <a class="file-name" href="${f.url}" download>${esc(f.filename||'file')}</a>
+          <div class="file-meta">${esc(f.contentType||'')} ${fmtBytes(f.sizeBytes)}</div>
+        </div>
+        <button class="rm-btn no-print" onclick="confirmDeleteBookFile('${b.id}','${f.id}')">×</button>
+      </div>`).join('')}</div>`
+      :`<div class="empty" style="padding:14px 0;">Nothing scanned yet. PDFs or scans of the book go here.</div>`}
+    <label class="upload-zone no-print">
+      📎 Upload a scan or document (PDF, images, anything)
+      <input type="file" multiple onchange="handleBookUpload(event,'${b.id}')">
+    </label>`;
+}
+
+function startAddCookbook(){
+  attemptNav(()=>{
+    state.editingBook={id:null,title:'',author:'',publisher:'',published:'',edition:'',isbn:'',notes:'',emoji:'📕'};
+    state.view='editCookbook'; render();
+  });
+}
+function startEditCookbook(id){
+  attemptNav(()=>{
+    state.editingBook=JSON.parse(JSON.stringify(cookbooks.find(b=>b.id===id)));
+    state.view='editCookbook'; render();
+  });
+}
+function viewEditCookbook(){
+  const b=state.editingBook, isNew=!b.id;
+  return `
+    <button class="back" onclick="cancelBookEdit()">← Cancel</button>
+    <h1 class="title">${isNew?'Add a Cookbook':'Edit Cookbook'}</h1>
+    <p class="subtle">Only the title is required — fill in whatever else you know.</p>
+    <div style="max-width:640px;">
+      <div class="form-row"><label>Title</label>
+        <input type="text" id="b_title" value="${escA(b.title)}" placeholder="The Joy of Cooking"></div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;">
+        <div class="form-row" style="flex:2;min-width:220px;"><label>Author</label>
+          <input type="text" id="b_author" value="${escA(b.author)}" placeholder="Irma S. Rombauer"></div>
+        <div class="form-row" style="flex:1;min-width:110px;"><label>Cover emoji</label>
+          <input type="text" id="b_emoji" value="${escA(b.emoji)}"></div>
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;">
+        <div class="form-row" style="flex:2;min-width:200px;"><label>Publisher</label>
+          <input type="text" id="b_publisher" value="${escA(b.publisher)}" placeholder="Scribner"></div>
+        <div class="form-row" style="flex:1;min-width:130px;"><label>Published</label>
+          <input type="text" id="b_published" value="${escA(b.published)}" placeholder="1997"></div>
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;">
+        <div class="form-row" style="flex:1;min-width:130px;"><label>Edition</label>
+          <input type="text" id="b_edition" value="${escA(b.edition)}" placeholder="75th Anniversary"></div>
+        <div class="form-row" style="flex:2;min-width:200px;"><label>ISBN</label>
+          <input type="text" id="b_isbn" value="${escA(b.isbn)}" placeholder="978-0-7432-4626-2"></div>
+      </div>
+      <div class="form-row"><label>Notes</label>
+        <textarea id="b_notes" rows="4" placeholder="Where it came from, who gave it to you, which sections are worth cooking from..."
+          style="width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);font-size:14px;font-family:inherit;">${esc(b.notes)}</textarea></div>
+      <button class="icon-btn primary" onclick="saveCookbook()">💾 Save Cookbook</button>
+      ${isNew?`<div class="subtle" style="margin-top:10px;font-size:12.5px;">
+        You can add photos and scanned files once it's saved.</div>`:''}
+    </div>`;
+}
+function cancelBookEdit(){ state.editingBook=null; state.view='cookbooks'; render(); }
+async function saveCookbook(){
+  const g=id=>document.getElementById(id).value;
+  const b=state.editingBook;
+  const payload={
+    title:g('b_title').trim(), author:g('b_author').trim(), publisher:g('b_publisher').trim(),
+    published:g('b_published').trim(), edition:g('b_edition').trim(), isbn:g('b_isbn').trim(),
+    notes:g('b_notes'), emoji:g('b_emoji').trim()||'📕',
+  };
+  if(!payload.title){ toast('A cookbook needs a title.'); return; }
+  try{
+    const res = b.id ? await apiJSON('/api/cookbooks/'+b.id,'PUT',payload)
+                     : await apiJSON('/api/cookbooks','POST',payload);
+    const id = b.id || res.id;
+    state.editingBook=null;
+    openCookbook(id);
+    toast(b.id?'Cookbook updated.':'Cookbook added.');
+  }catch(e){ apiError(e); }
+}
+function confirmDeleteCookbook(id){
+  const b=cookbooks.find(x=>x.id===id); if(!b) return;
+  const n=recipesInBook(id).length;
+  showModal({
+    title:'Remove this cookbook?',
+    body:`<b>${esc(b.title)}</b> will be removed, along with its photos and scanned files.` +
+      (n?`<br><br>The <b>${n} recipe${n!==1?'s':''}</b> linked to it will <b>not</b> be deleted —
+          they just stop showing a source.`:''),
+    buttons:[
+      {label:'Cancel'},
+      {label:'Remove cookbook', style:'danger', action:async()=>{
+        try{
+          await apiJSON('/api/cookbooks/'+id,'DELETE');
+          if(state.currentBookId===id){ state.currentBookId=null; state.view='cookbooks'; }
+          render(); toast(`"${b.title}" removed.`);
+        }catch(e){ apiError(e); }
+      }}
+    ]
+  });
+}
+async function handleBookUpload(ev,bookId){
+  const files=[...ev.target.files];
+  ev.target.value='';
+  if(!files.length) return;
+  setBusy(true);
+  try{
+    for(const f of files){
+      const fd=new FormData();
+      // shrink photos before upload; leave documents byte-for-byte
+      if(f.type.startsWith('image/')){
+        const url=await fileToDownscaledDataUrl(f);
+        fd.append('file', await (await fetch(url)).blob(), f.name);
+      } else {
+        fd.append('file', f, f.name);
+      }
+      fd.append('filename', f.name);
+      applyState(await api('/api/cookbooks/'+bookId+'/files',{method:'POST',body:fd}));
+    }
+    render(); toast(`${files.length} file${files.length!==1?'s':''} added.`);
+  }catch(e){ apiError(e); }
+  finally{ setBusy(false); }
+}
+async function setBookCover(fileId){
+  try{ await apiJSON('/api/cookbook-files/'+fileId+'/cover','POST');
+    render(); toast('Cover updated.'); }catch(e){ apiError(e); }
+}
+function confirmDeleteBookFile(bookId,fileId){
+  const b=cookbooks.find(x=>x.id===bookId); if(!b) return;
+  const item=[...(b.images||[]),...(b.files||[])].find(f=>f.id===fileId);
+  showModal({
+    title:'Delete this?',
+    body:`<b>${esc(item&&item.filename?item.filename:'This item')}</b> will be removed from ${esc(b.title)}.`,
+    buttons:[
+      {label:'Cancel'},
+      {label:'Delete', style:'danger', action:async()=>{
+        try{ await apiJSON('/api/cookbook-files/'+fileId,'DELETE'); render(); toast('Deleted.'); }
+        catch(e){ apiError(e); }
+      }}
+    ]
+  });
+}
+
 /* ============ BROWSE ============ */
 function viewBrowse(){
   const list=filteredSorted();
@@ -514,6 +766,7 @@ function viewDetail(){
       <div>
         <div>${r.categories.map(c=>`<span class="badge">${esc(c)}</span>`).join('')}</div>
         <h1>${r.emoji} ${esc(r.title)}</h1>
+        ${renderSourceLine(r)}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;" class="no-print">
         <button class="icon-btn sage" onclick="logCooked('${r.id}')">👨‍🍳 I cooked this</button>
@@ -543,6 +796,7 @@ function viewDetail(){
     ${state.detailTab==='ingredients'?renderIngredients(r,mult,applied):''}
     ${state.detailTab==='instructions'?`<ol class="steps">${r.instructions.map(s=>`<li>${esc(s)}</li>`).join('')}</ol>`:''}
     ${state.detailTab==='substitutions'?renderSubTab(r,pairs,applied):''}
+    ${renderNotesSection(r)}
     ${renderPhotoSection(r)}
     ${renderRatingsSection(r)}`;
 }
@@ -586,6 +840,28 @@ function renderSubTab(r,pairs,applied){
       </div>`;
     }).join('')}`;
 }
+function bookById(id){ return cookbooks.find(b=>b.id===id) || null; }
+function bookCover(b){ return (b.images||[]).find(i=>i.favorite) || (b.images||[])[0] || null; }
+
+/* "From <cookbook>, p. 42" under the recipe title, linking through to the book */
+function renderSourceLine(r){
+  const b = r.cookbookId ? bookById(r.cookbookId) : null;
+  if(!b) return '';
+  return `<div class="source-line">From
+    <button class="book-link" onclick="openCookbook('${b.id}')">${b.emoji} ${esc(b.title)}</button>${
+      r.cookbookPage?` <span class="page-ref">p. ${esc(r.cookbookPage)}</span>`:''}</div>`;
+}
+
+function renderNotesSection(r){
+  const has = (r.notes||'').trim();
+  return `
+    <div class="section-head"><h2>📝 Notes</h2>
+      <button class="icon-btn sm no-print" onclick="startEditRecipe('${r.id}')">✏️ Edit notes</button></div>
+    ${has ? `<div class="notes-body">${esc(r.notes)}</div>`
+          : `<div class="empty" style="padding:16px 0;">No notes yet — things like "double the garlic" or
+             "Mom's version uses buttermilk" go here.</div>`}`;
+}
+
 function renderPhotoSection(r){
   const imgs=r.images||[];
   return `
@@ -775,6 +1051,7 @@ function applyScanResult(res){
     tags:r.tags||[], dateAdded:new Date().toISOString().slice(0,10),
     baseServings:r.baseServings||4, emoji:r.emoji||'🍽️',
     ratings:[], timesCooked:0, localSubs:[], images:[],
+    notes:'', cookbookId:null, cookbookPage:'',
     ingredients:ings, instructions:r.instructions||[],
   };
   state.scanSource={image:state.scanImage, flagged:res.flagged||[], notes:res.notes||''};
@@ -799,7 +1076,8 @@ function startManualRecipe(){
   attemptNav(()=>{
     state.scanSource=null; state.scanImage=null;
     state.editing={id:null,title:'',categories:['Dinner'],tags:[],dateAdded:new Date().toISOString().slice(0,10),
-      baseServings:4,emoji:'🍽️',ingredients:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],instructions:[''],ratings:[],timesCooked:0,localSubs:[],images:[]};
+      baseServings:4,emoji:'🍽️',ingredients:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],instructions:[''],
+      ratings:[],timesCooked:0,localSubs:[],images:[],notes:'',cookbookId:null,cookbookPage:''};
     state.view='editRecipe'; render();
   });
 }
@@ -843,6 +1121,28 @@ function viewEditRecipe(){
       <div class="form-row" style="flex:1;min-width:130px;"><label>Emoji</label><input type="text" id="f_emoji" value="${escA(e.emoji)}"></div>
       <div class="form-row" style="flex:2;min-width:200px;"><label>Tags (comma separated)</label><input type="text" id="f_tags" value="${escA(e.tags.join(', '))}"></div>
     </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;">
+      <div class="form-row" style="flex:2;min-width:240px;">
+        <label>From a cookbook?</label>
+        <select id="f_cookbook" onchange="stashEditForm()">
+          <option value="">— Not from a cookbook —</option>
+          ${cookbooks.map(b=>`<option value="${b.id}" ${e.cookbookId===b.id?'selected':''}>${esc(b.title)}${b.author?` — ${esc(b.author)}`:''}</option>`).join('')}
+        </select>
+        ${cookbooks.length?'':`<div class="subtle" style="font-size:12px;margin-top:6px;">
+          No cookbooks yet — add one in the Cookbooks section and it will appear here.</div>`}
+      </div>
+      <div class="form-row" style="flex:1;min-width:120px;">
+        <label>Page</label>
+        <input type="text" id="f_cookbook_page" value="${escA(e.cookbookPage||'')}" placeholder="e.g. 142">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label>Notes</label>
+      <textarea id="f_notes" rows="4" placeholder="Anything worth remembering — tweaks you made, what to serve it with, who liked it..."
+        style="width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);font-size:14px;font-family:inherit;">${esc(e.notes||'')}</textarea>
+    </div>
+
     <div class="form-row"><label>Ingredients</label>
       <div class="subtle" style="margin:-2px 0 8px;font-size:12px;">Quantities accept fractions — <code>1/2</code>, <code>1 1/2</code>, <code>¾</code>, or decimals.</div>
       ${e.ingredients.map((i,idx)=>{
@@ -868,6 +1168,9 @@ function stashEditForm(){
   if(g('f_servings')) e.baseServings=parseFloat(g('f_servings').value)||1;
   if(g('f_emoji')) e.emoji=g('f_emoji').value||'🍽️';
   if(g('f_tags')) e.tags=g('f_tags').value.split(',').map(t=>t.trim()).filter(Boolean).map(titleCase);
+  if(g('f_notes')) e.notes=g('f_notes').value;
+  if(g('f_cookbook')) e.cookbookId=g('f_cookbook').value||null;
+  if(g('f_cookbook_page')) e.cookbookPage=g('f_cookbook_page').value.trim();
 }
 function toggleCat(i){
   stashEditForm();
@@ -907,6 +1210,9 @@ async function saveEdit(){
     dateAdded:e.dateAdded,
     categories:[...new Set(e.categories.map(titleCase))],
     tags:[...new Set((e.tags||[]).map(titleCase))].filter(Boolean),
+    notes:e.notes||'',
+    cookbookId:e.cookbookId||null,
+    cookbookPage:e.cookbookPage||'',
     ingredients:e.ingredients.filter(i=>String(i.name||'').trim())
       .map(i=>({qtyRaw:i.qtyRaw!=null?String(i.qtyRaw):String(i.qty||''), unit:i.unit||'', name:i.name})),
     instructions:e.instructions.filter(s=>String(s||'').trim()),
