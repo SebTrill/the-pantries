@@ -296,3 +296,18 @@ dl.facts dd{margin:0;text-align:left;}
 .focal-preview.as-hero{height:150px;}
 .focal-preview.as-book{height:200px;width:150px;}
 .focal-preview img{width:100%;height:100%;object-fit:cover;display:block;}
+
+/* ---- reorderable steps ---- */
+.step-row-edit{align-items:flex-start;border-radius:9px;padding:2px;transition:background .12s,opacity .12s;}
+.step-row-edit.dragging{opacity:.45;}
+.step-row-edit.drop-target{background:var(--accent-soft);box-shadow:inset 0 2px 0 var(--accent);}
+.drag-handle{cursor:grab;color:var(--ink-soft);font-size:17px;line-height:44px;padding:0 4px;
+  user-select:none;flex-shrink:0;}
+.drag-handle:active{cursor:grabbing;}
+.step-num{width:22px;height:22px;flex-shrink:0;margin-top:11px;border-radius:50%;background:var(--accent-soft);
+  color:var(--accent-dark);font-size:11.5px;font-weight:800;display:flex;align-items:center;justify-content:center;}
+.step-move{display:flex;flex-direction:column;gap:2px;flex-shrink:0;margin-top:4px;}
+.step-move .mv{background:var(--bg);border:1px solid var(--line);border-radius:6px;width:24px;height:19px;
+  font-size:10px;line-height:1;cursor:pointer;color:var(--ink-soft);padding:0;}
+.step-move .mv:hover:not(:disabled){border-color:var(--accent);color:var(--accent-dark);}
+.step-move .mv:disabled{opacity:.35;cursor:default;}
