@@ -235,6 +235,13 @@ async function saveRecipe(db, body, existingId) {
       `UPDATE recipes SET title=?, emoji=?, base_servings=?, notes=?,
                           cookbook_id=?, cookbook_page=?, updated_at=? WHERE id=?`
     ).bind(title, emoji, baseServings, notes, cookbookId, cookbookPage, ts, id).run();
+
+    if (body.timesCooked !== undefined && body.timesCooked !== null) {
+      const n = Math.max(0, Math.round(Number(body.timesCooked)));
+      if (Number.isFinite(n)) {
+        await db.prepare('UPDATE recipes SET times_cooked=? WHERE id=?').bind(n, id).run();
+      }
+    }
   } else {
     await db.prepare(
       `INSERT INTO recipes (id,title,emoji,base_servings,times_cooked,date_added,
