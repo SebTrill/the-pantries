@@ -37,7 +37,55 @@ function applyState(st){
   if (st.globalSubs) globalSubs = st.globalSubs;
   if (st.allCategories) allCategories = st.allCategories;
   if (st.shoppingList) shoppingList = st.shoppingList;
+  lastSig = storeSig();
 }
+
+/* ============ BACKGROUND REFRESH ============
+ * Navigating inside the app renders from memory, so a tab left open goes stale
+ * when you cook something on another device. Returning to the tab re-checks the
+ * server and redraws only if something actually changed.
+ */
+let lastSig = '';
+let lastFetchAt = 0;
+let lastDay = new Date().toISOString().slice(0,10);
+const REFRESH_MIN_GAP = 15000;
+
+const sigOf = st => JSON.stringify(
+  [st.recipes, st.cookbooks, st.globalSubs, st.allCategories, st.shoppingList, st.activity]);
+const storeSig = () => sigOf({recipes, cookbooks, globalSubs, allCategories, shoppingList, activity});
+
+/** Refusing to refresh matters more than refreshing: a redraw mid-edit would
+ *  throw away whatever is being typed. */
+function safeToRefresh(){
+  if (['editRecipe','editCookbook','scanning'].includes(state.view)) return false;
+  if (modalCfg || focalDraft) return false;
+  if (busyDepth > 0) return false;
+  return true;
+}
+
+async function backgroundRefresh(force){
+  if (!safeToRefresh()) return;
+  if (!force && Date.now() - lastFetchAt < REFRESH_MIN_GAP) return;
+  lastFetchAt = Date.now();
+  let st;
+  try {
+    st = await api('/api/bootstrap', {}, true);   // quiet: no spinner for a check nobody asked for
+  } catch (e) {
+    return;                                       // offline or a blip: keep showing what we have
+  }
+  const today = new Date().toISOString().slice(0,10);
+  const rolledOver = today !== lastDay;           // left open past midnight
+  if (sigOf(st) === lastSig && !rolledOver) return;
+  lastDay = today;
+  const y = window.scrollY;
+  applyState(st);
+  render();
+  window.scrollTo(0, y);
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden) backgroundRefresh(); });
+window.addEventListener('focus', () => backgroundRefresh());
+window.addEventListener('online', () => backgroundRefresh(true));
 async function apiJSON(path, method, body){
   const st = await api(path, {
     method,
