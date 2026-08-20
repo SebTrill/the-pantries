@@ -436,24 +436,44 @@ function safeEqual(a, b) {
 
 const LOGIN_PAGE = (msg) => `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>The Pantries</title>
-<style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
-background:#FAF6F0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#3A322C}
-form{background:#fff;border:1px solid #EBE2D6;border-radius:16px;padding:32px;width:340px;
-box-shadow:0 2px 14px rgba(58,50,44,.07);text-align:center}
-h1{font-size:21px;margin:0 0 6px}p{color:#7A6F64;font-size:13.5px;margin:0 0 18px}
-input{width:100%;padding:12px 14px;border:1px solid #EBE2D6;border-radius:10px;font-size:15px;
-box-sizing:border-box;margin-bottom:10px}
-button{width:100%;padding:12px;border:none;border-radius:10px;background:#C1673B;color:#fff;
-font-size:15px;font-weight:700;cursor:pointer}button:hover{background:#A6512C}
-.e{color:#B9503C;font-size:13px;margin-bottom:10px}</style></head>
+<meta name="theme-color" content="#181209">
+<style>
+@font-face{font-family:'Bevan';src:url('/fonts/bevan-400.woff2') format('woff2');font-weight:400;font-display:swap}
+@font-face{font-family:'Petrona';src:url('/fonts/petrona-400.woff2') format('woff2');font-weight:400;font-display:swap}
+@font-face{font-family:'PlexMono';src:url('/fonts/mono-400.woff2') format('woff2');font-weight:400;font-display:swap}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+ background:#181209;color:#F0E4CC;font-family:Petrona,Georgia,serif;
+ background-image:radial-gradient(900px 420px at 74% -10%,rgba(217,164,65,.14),transparent 64%),
+   radial-gradient(680px 380px at 8% 4%,rgba(180,85,47,.10),transparent 62%),
+   radial-gradient(circle at 1px 1px,rgba(240,228,204,.028) 1px,transparent 0);
+ background-size:auto,auto,5px 5px}
+form{background:#221A11;border:1px solid #3A2D1E;border-top:3px solid #D9A441;border-radius:3px;
+ padding:34px 30px;width:350px;text-align:center;box-shadow:0 24px 60px rgba(0,0,0,.6)}
+h1{font-family:Bevan;font-size:23px;margin:0 0 6px;color:#E4D5B8;letter-spacing:-.01em}
+h1 span{color:#D9A441}
+p{color:#A08D71;font-family:PlexMono,monospace;font-size:10.5px;letter-spacing:.2em;
+ text-transform:uppercase;margin:0 0 20px}
+.orn{color:#B4552F;letter-spacing:.6em;margin:0 0 18px;font-size:15px}
+input{width:100%;padding:12px 14px;border:1px solid #3A2D1E;background:#181209;color:#F0E4CC;
+ border-radius:3px;font-size:16px;font-family:Petrona,Georgia,serif;margin-bottom:12px}
+input:focus{outline:none;border-color:#D9A441;box-shadow:0 0 0 3px rgba(217,164,65,.14)}
+button{width:100%;padding:12px;border:none;border-radius:3px;background:#D9A441;color:#221A11;
+ font-family:Bevan;font-size:13px;letter-spacing:.06em;cursor:pointer}
+button:hover{filter:brightness(1.08)}
+.e{color:#C96A3F;font-family:PlexMono,monospace;font-size:11px;letter-spacing:.1em;margin-bottom:12px}
+</style></head>
 <body><form method="POST" action="/__login">
-<h1>🍲 The Pantries</h1><p>Enter the site password to continue.</p>
+<h1>The <span>Pantries</span></h1>
+<div class="orn">❧ ❧ ❧</div>
+<p>Enter the site password to continue</p>
 ${msg ? `<div class="e">${msg}</div>` : ''}
 <input type="password" name="password" placeholder="Password" autofocus autocomplete="current-password">
 <button type="submit">Unlock</button></form></body></html>`;
 
 async function gate(request, env, url) {
   if (!env.SITE_PASSWORD) return null;                                  // gate disabled
+  if (url.pathname.startsWith('/fonts/')) return null;                  // let the login page load its type
   if (request.headers.get('Cf-Access-Authenticated-User-Email')) return null;  // Access handles it
 
   const expected = await signToken(env.SITE_PASSWORD);
