@@ -1249,6 +1249,8 @@ function viewEditRecipe(){
     <div style="display:flex;gap:14px;flex-wrap:wrap;">
       <div class="form-row" style="flex:1;min-width:130px;"><label>Base Servings</label><input type="text" id="f_servings" value="${e.baseServings}"></div>
       <div class="form-row" style="flex:1;min-width:130px;"><label>Emoji</label><input type="text" id="f_emoji" value="${escA(e.emoji)}"></div>
+      <div class="form-row" style="flex:1;min-width:130px;"><label>Times cooked</label>
+        <input type="text" id="f_cooked" value="${e.timesCooked||0}" inputmode="numeric"></div>
       <div class="form-row" style="flex:2;min-width:200px;"><label>Tags (comma separated)</label><input type="text" id="f_tags" value="${escA(e.tags.join(', '))}"></div>
     </div>
     <div style="display:flex;gap:14px;flex-wrap:wrap;">
@@ -1285,8 +1287,19 @@ function viewEditRecipe(){
         <button class="small-x" onclick="removeIng(${idx})">×</button></div>`;}).join('')}
       <button class="dashed-add" onclick="addIngRow()">+ Add ingredient</button></div>
     <div class="form-row"><label>Instructions</label>
-      ${e.instructions.map((s,idx)=>`<div class="step-row-edit">
+      ${e.instructions.length>1?`<div class="subtle" style="margin:-2px 0 8px;font-size:12px;">
+        Drag the ⠿ handle to reorder, or use the arrows.</div>`:''}
+      ${e.instructions.map((s,idx)=>`<div class="step-row-edit" draggable="false"
+          ondragstart="stepDragStart(event,${idx})" ondragover="stepDragOver(event)"
+          ondragleave="stepDragLeave(event)" ondrop="stepDrop(event,${idx})" ondragend="stepDragEnd(event)">
+        <span class="drag-handle" title="Drag to reorder"
+          onmousedown="armDrag(this)" onmouseup="disarmDrag(this)">⠿</span>
+        <span class="step-num">${idx+1}</span>
         <textarea oninput="editStep(${idx},this.value)">${esc(s)}</textarea>
+        <span class="step-move no-print">
+          <button class="mv" title="Move up" ${idx===0?'disabled':''} onclick="moveStep(${idx},${idx-1})">↑</button>
+          <button class="mv" title="Move down" ${idx===e.instructions.length-1?'disabled':''} onclick="moveStep(${idx},${idx+1})">↓</button>
+        </span>
         <button class="small-x" onclick="removeStep(${idx})">×</button></div>`).join('')}
       <button class="dashed-add" onclick="addStepRow()">+ Add step</button></div>
     <button class="icon-btn primary" onclick="saveEdit()">💾 Save Recipe</button>`;
@@ -1297,6 +1310,10 @@ function stashEditForm(){
   if(g('f_title')) e.title=g('f_title').value;
   if(g('f_servings')) e.baseServings=parseFloat(g('f_servings').value)||1;
   if(g('f_emoji')) e.emoji=g('f_emoji').value||'🍽️';
+  if(g('f_cooked')){
+    const n=parseInt(g('f_cooked').value,10);
+    e.timesCooked = Number.isFinite(n) && n>=0 ? n : 0;
+  }
   if(g('f_tags')) e.tags=g('f_tags').value.split(',').map(t=>t.trim()).filter(Boolean).map(titleCase);
   if(g('f_notes')) e.notes=g('f_notes').value;
   if(g('f_cookbook')) e.cookbookId=g('f_cookbook').value||null;
@@ -1317,6 +1334,49 @@ function addCategory(){
   if(!state.editing.categories.includes(match)) state.editing.categories.push(match);
   renderMain(); toast(`Category "${match}" created.`);
 }
+/* ---- reordering steps ----
+ * The row is only draggable while the mouse is held on the handle, otherwise
+ * selecting text inside the textarea would start a drag instead.
+ */
+let dragStepIndex = null;
+function armDrag(el){ const row=el.closest('.step-row-edit'); if(row) row.draggable=true; }
+function disarmDrag(el){ const row=el.closest('.step-row-edit'); if(row) row.draggable=false; }
+function stepDragStart(ev, idx){
+  dragStepIndex = idx;
+  ev.dataTransfer.effectAllowed='move';
+  try{ ev.dataTransfer.setData('text/plain', String(idx)); }catch(e){}
+  ev.currentTarget.classList.add('dragging');
+}
+function stepDragOver(ev){
+  if(dragStepIndex===null) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect='move';
+  ev.currentTarget.classList.add('drop-target');
+}
+function stepDragLeave(ev){ ev.currentTarget.classList.remove('drop-target'); }
+function stepDrop(ev, idx){
+  ev.preventDefault();
+  ev.currentTarget.classList.remove('drop-target');
+  const from = dragStepIndex !== null ? dragStepIndex : parseInt(ev.dataTransfer.getData('text/plain'),10);
+  dragStepIndex = null;
+  moveStep(from, idx);
+}
+function stepDragEnd(ev){
+  dragStepIndex = null;
+  ev.currentTarget.draggable = false;
+  document.querySelectorAll('.step-row-edit').forEach(r=>
+    r.classList.remove('dragging','drop-target'));
+}
+function moveStep(from, to){
+  const arr = state.editing && state.editing.instructions;
+  if(!arr) return;
+  if(!Number.isInteger(from) || !Number.isInteger(to)) return;
+  if(from===to || from<0 || to<0 || from>=arr.length || to>=arr.length) return;
+  const [item] = arr.splice(from,1);
+  arr.splice(to,0,item);
+  renderMain();
+}
+
 function cancelEdit(){ state.editing=null; state.scanSource=null; state.scanImage=null; state.view='browse'; render(); }
 function editIngField(idx,f,v){
   const ing=state.editing.ingredients[idx];
@@ -1328,9 +1388,34 @@ function removeIng(idx){ stashEditForm(); state.editing.ingredients.splice(idx,1
 function editStep(idx,v){ state.editing.instructions[idx]=v; }
 function addStepRow(){ stashEditForm(); state.editing.instructions.push(''); renderMain(); }
 function removeStep(idx){ stashEditForm(); state.editing.instructions.splice(idx,1); renderMain(); }
+/* Cook count is normally earned one meal at a time, so an edit that changes it
+   asks first — it's easy to fat-finger and impossible to recover afterwards. */
 async function saveEdit(){
   stashEditForm();
   const e=state.editing;
+  const original = e.id ? recipes.find(r=>r.id===e.id) : null;
+  const was = original ? (original.timesCooked||0) : 0;
+  const now = e.timesCooked||0;
+  if(original && now !== was){
+    showModal({
+      title:'Change the cook count?',
+      body:`<b>${esc(original.title)}</b> is recorded as cooked <b>${was} time${was===1?'':'s'}</b>.
+        You're changing that to <b>${now} time${now===1?'':'s'}</b>.<br><br>
+        This rewrites the history behind your Most Cooked rankings, and the old number isn't recoverable.
+        Everything else on the form saves either way.`,
+      buttons:[
+        {label:'Keep it at '+was, action:()=>{ e.timesCooked = was; commitEdit(); }},
+        {label:'Cancel'},
+        {label:`Change to ${now}`, style:'primary', action:commitEdit},
+      ]
+    });
+    return;
+  }
+  commitEdit();
+}
+async function commitEdit(){
+  const e=state.editing;
+  if(!e) return;
   if(!e.title.trim()) e.title='Untitled Recipe';
   if(!e.categories.length) e.categories=['Dinner'];
   const payload={
@@ -1343,6 +1428,7 @@ async function saveEdit(){
     notes:e.notes||'',
     cookbookId:e.cookbookId||null,
     cookbookPage:e.cookbookPage||'',
+    timesCooked:e.timesCooked||0,
     ingredients:e.ingredients.filter(i=>String(i.name||'').trim())
       .map(i=>({qtyRaw:i.qtyRaw!=null?String(i.qtyRaw):String(i.qty||''), unit:i.unit||'', name:i.name})),
     instructions:e.instructions.filter(s=>String(s||'').trim()),
