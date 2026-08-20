@@ -118,6 +118,15 @@ CREATE TABLE IF NOT EXISTS cookbook_files (
   created_at   INTEGER NOT NULL
 );
 
+-- One row per meal cooked, so activity can be charted over time.
+CREATE TABLE IF NOT EXISTS cook_events (
+  id        TEXT PRIMARY KEY,
+  recipe_id TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  cooked_at INTEGER NOT NULL,
+  cooked_on TEXT NOT NULL,
+  source    TEXT NOT NULL DEFAULT 'button'
+);
+
 CREATE TABLE IF NOT EXISTS shopping_items (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -141,3 +150,5 @@ CREATE INDEX IF NOT EXISTS idx_recipes_cooked       ON recipes(times_cooked DESC
 CREATE INDEX IF NOT EXISTS idx_recipes_added        ON recipes(date_added DESC);
 CREATE INDEX IF NOT EXISTS idx_recipes_cookbook     ON recipes(cookbook_id);
 CREATE INDEX IF NOT EXISTS idx_cookbook_files_bk    ON cookbook_files(cookbook_id, kind);
+CREATE INDEX IF NOT EXISTS idx_cook_events_day      ON cook_events(cooked_on);
+CREATE INDEX IF NOT EXISTS idx_cook_events_recipe   ON cook_events(recipe_id, cooked_at DESC);

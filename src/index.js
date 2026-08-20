@@ -45,6 +45,14 @@ const uid = () =>
   crypto.randomUUID().replace(/-/g, '').slice(0, 12);
 
 const now = () => Date.now();
+const dayKey = (ts) => new Date(ts).toISOString().slice(0, 10);
+
+/** Records one cooked meal. Called by the cook button and by rating a recipe. */
+function logCook(db, recipeId, ts, source) {
+  return db.prepare(
+    'INSERT INTO cook_events (id,recipe_id,cooked_at,cooked_on,source) VALUES (?,?,?,?,?)'
+  ).bind(uid(), recipeId, ts, dayKey(ts), source);
+}
 
 /* ---------- text + quantity normalization (mirrors the client) ---------- */
 
@@ -170,13 +178,19 @@ async function loadCookbooks(db) {
 }
 
 async function bootstrap(db) {
-  const [recipes, subs, shopping, cats, cookbooks] = await Promise.all([
+  const since = dayKey(Date.now() - 400 * 86400000);   // a full year of history, plus slack
+  const [recipes, subs, shopping, cats, cookbooks, activity, lastCooked] = await Promise.all([
     loadRecipes(db),
     db.prepare('SELECT * FROM substitutions ORDER BY ingredient').all(),
     db.prepare('SELECT * FROM shopping_items ORDER BY created_at').all(),
     db.prepare('SELECT name FROM categories ORDER BY name').all(),
     loadCookbooks(db),
+    db.prepare(`SELECT cooked_on AS day, COUNT(*) AS n FROM cook_events
+                WHERE cooked_on >= ? GROUP BY cooked_on`).bind(since).all(),
+    db.prepare(`SELECT recipe_id, MAX(cooked_at) AS last FROM cook_events GROUP BY recipe_id`).all(),
   ]);
+  const lastById = new Map(lastCooked.results.map(r => [r.recipe_id, r.last]));
+  for (const r of recipes) r.lastCookedAt = lastById.get(r.id) || null;
 
   const globalSubs = [];
   const localByRecipe = new Map();
@@ -194,6 +208,7 @@ async function bootstrap(db) {
   return {
     recipes,
     cookbooks,
+    activity: activity.results.map(a => ({ day: a.day, n: a.n })),
     globalSubs,
     allCategories: cats.results.map(c => c.name),
     shoppingList: shopping.results.map(s => ({
@@ -566,10 +581,13 @@ export default {
         }
 
         if (sub === '/cook' && method === 'POST') {
-          await db.prepare('UPDATE recipes SET times_cooked = times_cooked + 1, updated_at=? WHERE id=?')
-            .bind(now(), id).run();
-          const row = await db.prepare('SELECT times_cooked FROM recipes WHERE id=?').bind(id).first();
-          return json({ timesCooked: row ? row.times_cooked : 0 });
+          const ts = now();
+          await db.batch([
+            db.prepare('UPDATE recipes SET times_cooked = times_cooked + 1, updated_at=? WHERE id=?')
+              .bind(ts, id),
+            logCook(db, id, ts, 'button'),
+          ]);
+          return json(await bootstrap(db));
         }
 
         if (sub === '/ratings' && method === 'POST') {
@@ -583,6 +601,7 @@ export default {
                 new Date().toISOString().slice(0, 10), ts),
             db.prepare('UPDATE recipes SET times_cooked = times_cooked + 1, updated_at=? WHERE id=?')
               .bind(ts, id),
+            logCook(db, id, ts, 'rating'),
           ]);
           return json(await bootstrap(db), 201);
         }
