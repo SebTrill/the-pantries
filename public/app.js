@@ -220,6 +220,13 @@ function relevanceScore(r,q){
   r.tags.forEach(t=>{ if(t.toLowerCase().includes(q)) s+=4; });
   r.ingredients.forEach(i=>{ if(i.name.toLowerCase().includes(q)) s+=2; });
   r.categories.forEach(c=>{ if(c.toLowerCase().includes(q)) s+=3; });
+  // the book a recipe came from is part of how you remember it
+  const b = r.cookbookId ? bookById(r.cookbookId) : null;
+  if(b){
+    if(b.title.toLowerCase().includes(q)) s+=6;
+    if(b.title.toLowerCase().startsWith(q)) s+=3;
+    if((b.author||'').toLowerCase().includes(q)) s+=4;
+  }
   return s;
 }
 function filteredSorted(){
@@ -374,7 +381,7 @@ function viewHome(){
       <h1>What are you cooking today?</h1>
       <p>${recipes.length} recipes · ${globalSubs.length} substitutions · ${recipes.reduce((a,r)=>a+r.timesCooked,0)} meals cooked</p>
       <div class="home-search">
-        <input id="homeSearch" type="text" placeholder="Search recipes by name, ingredient, category, or tag..."
+        <input id="homeSearch" type="text" placeholder="Search recipes by name, ingredient, cookbook, or tag..."
           onkeydown="if(event.key==='Enter'){event.preventDefault();runHomeSearch();}">
         <button class="icon-btn primary" onclick="runHomeSearch()">🔍 Search</button>
       </div>
@@ -720,7 +727,7 @@ function viewBrowse(){
     <p class="subtle">${recipes.length} recipes in your pantry</p>
     <div class="controls">
       <div class="search-wrap"><span class="sicon">🔍</span>
-        <input id="searchInput" type="text" placeholder="Search by name, ingredient, category, or tag..." value="${escA(state.searchQuery)}" oninput="onSearch(this)"></div>
+        <input id="searchInput" type="text" placeholder="Search by name, ingredient, category, tag, or cookbook..." value="${escA(state.searchQuery)}" oninput="onSearch(this)"></div>
       <select onchange="state.categoryFilter=this.value; renderMain();">
         <option value="all">All Categories</option>
         ${allCategories.map(c=>`<option value="${escA(c)}" ${state.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}
@@ -736,6 +743,16 @@ function viewBrowse(){
     ${list.length===0?`<div class="empty">No recipes match your search/filters.</div>`:`
     <div class="grid">${list.map(recipeCard).join('')}</div>`}`;
 }
+/* The source book on a card. Skipped on a cookbook's own page, where every
+   card would repeat the same book name back at you. */
+function cardSourceLine(r){
+  if(state.view === 'cookbookDetail') return '';
+  const b = r.cookbookId ? bookById(r.cookbookId) : null;
+  if(!b) return '';
+  return `<div class="card-source" title="From ${escA(b.title)}">${b.emoji} ${esc(b.title)}${
+    r.cookbookPage ? ` · p. ${esc(r.cookbookPage)}` : ''}</div>`;
+}
+
 function recipeCard(r){
   return `<div class="rcard" onclick="openRecipe('${r.id}')">
     <button class="card-del no-print" title="Remove recipe" onclick="event.stopPropagation(); confirmDeleteRecipe('${r.id}')">×</button>
@@ -745,6 +762,7 @@ function recipeCard(r){
     <div class="body">
       <div>${r.categories.map(c=>`<span class="badge">${esc(c)}</span>`).join('')}</div>
       <h3>${esc(r.title)}</h3>
+      ${cardSourceLine(r)}
       <div class="rmeta">
         <span class="stars">${r.ratings.length?starString(avgRating(r)):'☆☆☆☆☆'} ${r.ratings.length?`(${r.ratings.length})`:''}</span>
         <span>👨‍🍳 ${r.timesCooked}×</span>
