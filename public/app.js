@@ -182,7 +182,7 @@ function downscale(dataUrl, cb, max=1400){
     let w=img.width, h=img.height;
     if(w>max||h>max){ const s=Math.min(max/w,max/h); w=Math.round(w*s); h=Math.round(h*s); }
     const c=document.createElement('canvas'); c.width=w; c.height=h;
-    const ctx=c.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+    const ctx=c.getContext('2d'); ctx.fillStyle='#181209'; ctx.fillRect(0,0,w,h);
     ctx.drawImage(img,0,0,w,h);
     try{ cb(c.toDataURL('image/jpeg',0.85)); }catch(e){ cb(dataUrl); }
   };
@@ -372,10 +372,10 @@ function render(){
         <button class="addbtn" onclick="startAddRecipe()">+ Add Recipe</button>
       </div>
     </div>
-    <div class="main viz-scope" id="main"></div>
+    <div class="main" id="main"></div>
     <div class="app-foot no-print">
       ${userEmail?`Signed in as ${esc(userEmail)} · `:''}The Pantries ·
-      <a href="#" onclick="event.preventDefault();downloadBackup();" style="color:var(--accent-dark);">Download backup</a>
+      <a href="#" onclick="event.preventDefault();downloadBackup();" style="color:var(--ochre);">Download backup</a>
     </div>`;
   renderMain();
 }
@@ -553,7 +553,7 @@ function renderPantry(){
       <div style="display:flex;gap:8px;">
         <input type="text" id="pantryInput" placeholder="e.g. chicken, rice, butter"
           onkeydown="if(event.key==='Enter'){event.preventDefault();addPantryItem();}"
-          style="flex:1;padding:9px 12px;border-radius:9px;border:1px solid var(--line);font-size:13.5px;">
+          style="flex:1;padding:9px 12px;border-radius:3px;border:1px solid var(--rule);font-size:14px;background:var(--panel);color:var(--cream);font-family:var(--body);">
         <button class="icon-btn" onclick="addPantryItem()">+ Add</button>
       </div>
       ${state.pantry.length===0
@@ -702,9 +702,10 @@ function renderActivity(){
 /* ---------- cookbook shelf ---------- */
 function renderShelf(){
   if(!cookbooks.length) return '';
-  const tones=['linear-gradient(150deg,#C1673B,#8E4526)','linear-gradient(150deg,#6B7A4F,#4A5636)',
-    'linear-gradient(150deg,#4A3F6B,#2E2745)','linear-gradient(150deg,#C99A3A,#96701F)',
-    'linear-gradient(150deg,#8E6A55,#5E4536)'];
+  // cloth bindings, warm inks — deliberately darker than the page so the shelf reads as objects
+  const tones=['linear-gradient(155deg,#8E3E23,#4A1F11)','linear-gradient(155deg,#5C6640,#2C3320)',
+    'linear-gradient(155deg,#8A6524,#463314)','linear-gradient(155deg,#6B4430,#372117)',
+    'linear-gradient(155deg,#4A3A55,#241C2B)'];
   return `
     <div class="sec-head"><h2>📚 Your shelf</h2>
       <button class="link" onclick="goto('cookbooks')">All cookbooks →</button></div>
@@ -811,7 +812,7 @@ function viewHome(){
                 <span class="stars" style="font-size:12px;">${'★'.repeat(f.c.stars)}${'☆'.repeat(5-f.c.stars)}</span>
               </div>
               ${f.c.comment?`<div class="ftext">"${esc(f.c.comment)}"</div>`
-                :`<div class="ftext" style="color:var(--ink-soft);">Rated with no comment</div>`}
+                :`<div class="ftext" style="color:var(--dim);">Rated with no comment</div>`}
               <div class="fdate">${f.c.date}</div>
             </div>`;}).join('')
           :`<div class="empty" style="padding:12px 0;font-size:13px;">No ratings yet.</div>`}
@@ -1039,7 +1040,7 @@ function viewEditCookbook(){
       </div>
       <div class="form-row"><label>Notes</label>
         <textarea id="b_notes" rows="4" placeholder="Where it came from, who gave it to you, which sections are worth cooking from..."
-          style="width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);font-size:14px;font-family:inherit;">${esc(b.notes)}</textarea></div>
+          style="width:100%;padding:10px 12px;border-radius:3px;border:1px solid var(--rule);font-size:15px;background:var(--panel);color:var(--cream);font-family:var(--body);">${esc(b.notes)}</textarea></div>
       <button class="icon-btn primary" onclick="saveCookbook()">💾 Save Cookbook</button>
       ${isNew?`<div class="subtle" style="margin-top:10px;font-size:12.5px;">
         You can add photos and scanned files once it's saved.</div>`:''}
@@ -1251,9 +1252,9 @@ function viewDetail(){
     <div class="scale-row no-print">
       <label>Scale recipe:</label>
       ${[0.5,1,2,3].map(v=>`<button class="scale-btn ${mult===v?'active':''}" onclick="setScale('${r.id}',${v})">${v===0.5?'½':v}×</button>`).join('')}
-      <span style="color:var(--ink-soft);font-size:12.5px;">or custom:</span>
+      <span style="color:var(--dim);font-size:12.5px;">or custom:</span>
       <input type="number" min="0.1" step="0.1" value="${mult}" onchange="setScale('${r.id}', parseFloat(this.value)||1)">
-      <span style="color:var(--ink-soft);font-size:12.5px;">→ serves ${Math.round(r.baseServings*mult*10)/10}</span>
+      <span style="color:var(--dim);font-size:12.5px;">→ serves ${Math.round(r.baseServings*mult*10)/10}</span>
     </div>
     <div class="tabs no-print">
       <button class="tab ${state.detailTab==='ingredients'?'active':''}" onclick="setTab('ingredients')">Ingredients</button>
@@ -1443,9 +1444,9 @@ function renderRatingsSection(r){
     <div class="section-head"><h2>⭐ Ratings & Comments</h2>
       <span class="subtle" style="margin:0;">${r.ratings.length} review${r.ratings.length!==1?'s':''} · avg ${r.ratings.length?(avgRating(r)).toFixed(1):'—'}</span></div>
     <div class="panel no-print" style="margin-bottom:18px;">
-      <div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">Rate this recipe <span style="font-weight:400;color:var(--ink-soft);">(also logs a cook — bumps your Most Used count)</span></div>
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">Rate this recipe <span style="font-weight:400;color:var(--dim);">(also logs a cook — bumps your Most Used count)</span></div>
       ${[1,2,3,4,5].map(n=>`<span class="starpick ${n<=state.starDraft?'on':''}" onclick="state.starDraft=${n}; renderMain();">★</span>`).join('')}
-      <textarea id="commentDraft" placeholder="Optional comment — what worked, what you'd change..." rows="2" style="width:100%;margin-top:10px;padding:9px 12px;border-radius:8px;border:1px solid var(--line);font-size:13.5px;font-family:inherit;"></textarea>
+      <textarea id="commentDraft" placeholder="Optional comment — what worked, what you'd change..." rows="2" style="width:100%;margin-top:10px;padding:10px 12px;border-radius:3px;border:1px solid var(--rule);font-size:15px;background:var(--panel);color:var(--cream);font-family:var(--body);"></textarea>
       <button class="icon-btn primary" style="margin-top:10px;" onclick="submitRating('${r.id}')">Submit Rating</button>
     </div>
     ${r.ratings.length===0?`<div class="empty">No comments yet — be the first to rate it!</div>`:
@@ -1659,7 +1660,7 @@ function viewEditRecipe(){
           ${state.scanSource.notes?`<p style="margin-top:8px;"><b>Note from the scan:</b> ${esc(state.scanSource.notes)}</p>`:''}
         </div>
       </div>`:
-      `<div class="notice">Mockup form — in the real app this saves permanently. On save, ingredients are auto-scanned against your substitutions library.</div>`}
+      `<div class="notice">On save, ingredients are scanned against your substitutions library automatically.</div>`}
     <div class="form-row"><label>Title</label><input type="text" id="f_title" value="${escA(e.title)}"></div>
     <div class="form-row">
       <label>Categories (pick any number)</label>
@@ -1667,7 +1668,7 @@ function viewEditRecipe(){
         ${allCategories.map((c,i)=>`<span class="cat-chip ${e.categories.includes(c)?'on':''}" onclick="toggleCat(${i})">${e.categories.includes(c)?'✓':'+'} ${esc(c)}</span>`).join('')}
       </div>
       <div style="display:flex;gap:8px;max-width:420px;">
-        <input type="text" id="f_newcat" placeholder="Create a new category..." style="flex:1;padding:9px 12px;border-radius:9px;border:1px solid var(--line);font-size:14px;">
+        <input type="text" id="f_newcat" placeholder="Create a new category..." style="flex:1;padding:9px 12px;border-radius:3px;border:1px solid var(--rule);font-size:14px;background:var(--panel);color:var(--cream);font-family:var(--body);">
         <button class="icon-btn" onclick="addCategory()">+ Add</button>
       </div>
     </div>
@@ -1697,7 +1698,7 @@ function viewEditRecipe(){
     <div class="form-row">
       <label>Notes</label>
       <textarea id="f_notes" rows="4" placeholder="Anything worth remembering — tweaks you made, what to serve it with, who liked it..."
-        style="width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);font-size:14px;font-family:inherit;">${esc(e.notes||'')}</textarea>
+        style="width:100%;padding:10px 12px;border-radius:3px;border:1px solid var(--rule);font-size:15px;background:var(--panel);color:var(--cream);font-family:var(--body);">${esc(e.notes||'')}</textarea>
     </div>
 
     <div class="form-row"><label>Ingredients</label>
@@ -2017,7 +2018,7 @@ function viewShopping(){
         </div>
         ${subs.length?`<button class="sub-toggle no-print" onclick="toggleShopSubs('${it.id}')">${open?'▾':'▸'} ${subs.length} substitution${subs.length!==1?'s':''} available</button>`:''}
         ${subs.length&&open?`<div class="shop-subs">${subs.map(s=>`
-          <div class="srow"><div>→ <b>${esc(s.substitute)}</b>${s.notes?`<div class="note" style="font-size:11.5px;color:var(--ink-soft);">${esc(s.notes)}</div>`:''}</div>
+          <div class="srow"><div>→ <b>${esc(s.substitute)}</b>${s.notes?`<div class="note" style="font-size:11.5px;color:var(--dim);">${esc(s.notes)}</div>`:''}</div>
           <button class="icon-btn sm no-print" onclick="swapShopItem('${it.id}','${s.id}')">Buy this instead</button></div>`).join('')}</div>`:''}
       </div>`;
     }).join('')}`;
