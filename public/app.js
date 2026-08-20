@@ -3,6 +3,7 @@ const uid = () => Math.random().toString(36).slice(2,9);
 
 let recipes = [];
 let cookbooks = [];
+let activity = [];
 let globalSubs = [];
 let allCategories = [];
 let shoppingList = [];
@@ -32,6 +33,7 @@ function applyState(st){
   if (!st) return;
   if (st.recipes) recipes = st.recipes;
   if (st.cookbooks) cookbooks = st.cookbooks;
+  if (st.activity) activity = st.activity;
   if (st.globalSubs) globalSubs = st.globalSubs;
   if (st.allCategories) allCategories = st.allCategories;
   if (st.shoppingList) shoppingList = st.shoppingList;
@@ -78,7 +80,8 @@ function downloadBackup(){ window.location.href = '/api/export'; }
 /* ============ STATE ============ */
 let state = {
   view:'home', currentRecipeId:null, currentBookId:null, editingBook:null,
-  bookSearch:'', bookRecipeSearch:'', detailTab:'ingredients', discoverIds:[],
+  bookSearch:'', bookRecipeSearch:'', detailTab:'ingredients', activityRange:'1y',
+  pantry:[], tonightId:null,
   searchQuery:'', categoryFilter:'all', sortBy:'newest',
   subSearch:'', scale:{}, editing:null, starDraft:0,
   appliedSubs:{},        // recipeId -> { ingredientId: {ingredientName, substitute, notes} }
@@ -315,11 +318,13 @@ function render(){
         <span class="ic">🔁</span> Substitutions<span class="count">${globalSubs.length}</span></button>
       <button class="navbtn ${state.view==='shopping'?'active':''}" onclick="goto('shopping')">
         <span class="ic">🛒</span> Shopping List${shoppingList.length?`<span class="count">${shoppingList.filter(i=>!i.checked).length}</span>`:''}</button>
-      <button class="addbtn" onclick="startAddRecipe()">+ Add Recipe</button>
-      <button class="navbtn" title="Download a backup of everything" onclick="downloadBackup()">
-        <span class="ic">⬇</span></button>
+      <div class="topbar-right">
+        <button class="navbtn iconly" title="Download a backup of everything" onclick="downloadBackup()">
+          <span class="ic">⬇</span></button>
+        <button class="addbtn" onclick="startAddRecipe()">+ Add Recipe</button>
+      </div>
     </div>
-    <div class="main" id="main"></div>
+    <div class="main viz-scope" id="main"></div>
     <div class="app-foot no-print">
       ${userEmail?`Signed in as ${esc(userEmail)} · `:''}The Pantries ·
       <a href="#" onclick="event.preventDefault();downloadBackup();" style="color:var(--accent-dark);">Download backup</a>
@@ -343,20 +348,6 @@ function topRanked(n=10){
     (avgRating(b)-avgRating(a)) || (b.timesCooked-a.timesCooked) || a.title.localeCompare(b.title)
   ).slice(0,n);
 }
-/* Discovery: favors recipes you cook least / haven't rated, so they don't stay buried */
-function shuffleDiscover(){
-  const skip=new Set(mostCooked().map(r=>r.id));
-  let pool=recipes.filter(r=>!skip.has(r.id));
-  if(pool.length<3){
-    // Small library: nothing is left over, so fall back to the least-cooked recipes
-    // (minus your #1) rather than repeating the Most Cooked row verbatim.
-    const excl=new Set(mostCooked(1).map(r=>r.id));
-    pool=recipes.filter(r=>!excl.has(r.id)).sort((a,b)=>a.timesCooked-b.timesCooked).slice(0,6);
-  }
-  const weight=r=>(r.ratings.length?0:2)+(r.timesCooked<=2?1.5:0)+Math.random()*2.5;
-  state.discoverIds=pool.map(r=>({r,k:weight(r)})).sort((a,b)=>b.k-a.k).slice(0,3).map(x=>x.r.id);
-}
-function refreshDiscover(){ shuffleDiscover(); renderMain(); toast('Shuffled — showing different recipes.'); }
 function recentActivity(n=6){
   const feed=[];
   recipes.forEach(r=>(r.ratings||[]).forEach(c=>feed.push({r,c})));
@@ -370,62 +361,424 @@ function runHomeSearch(){
   state.categoryFilter='all';
   goto('browse');
 }
+/* ---------- home page stats ---------- */
+function totalCooked(){ return recipes.reduce((a,r)=>a+(r.timesCooked||0),0); }
+function ratedRecipes(){ return recipes.filter(r=>r.ratings.length); }
+function overallAvg(){
+  const rated = ratedRecipes();
+  if(!rated.length) return 0;
+  return rated.reduce((a,r)=>a+avgRating(r),0)/rated.length;
+}
+function monthKey(d){ return String(d).slice(0,7); }
+function lastSixMonthKeys(){
+  const out=[], now=new Date();
+  for(let i=5;i>=0;i--){
+    const d=new Date(now.getFullYear(), now.getMonth()-i, 1);
+    out.push(d.toISOString().slice(0,7));
+  }
+  return out;
+}
+function cooksInLastDays(n){
+  const cutoff = new Date(Date.now()-n*86400000).toISOString().slice(0,10);
+  return (activity||[]).filter(a=>a.day>=cutoff).reduce((t,a)=>t+a.n,0);
+}
+function sparkBars(values){
+  const max = Math.max(1, ...values);
+  return `<div class="k-spark">${values.map((v,i)=>
+    `<i class="${i===values.length-1?'hi':''}" style="height:${Math.max(6, Math.round(v/max*100))}%"
+       title="${v}"></i>`).join('')}</div>`;
+}
+
+function renderKpiRow(){
+  const months = lastSixMonthKeys();
+  const addedPerMonth = months.map(m=>recipes.filter(r=>monthKey(r.dateAdded)===m).length);
+  const cooksPerMonth = months.map(m=>(activity||[]).filter(a=>monthKey(a.day)===m).reduce((t,a)=>t+a.n,0));
+  const thisMonth = addedPerMonth[addedPerMonth.length-1];
+  const never = recipes.filter(r=>!r.timesCooked).length;
+  const avg = overallAvg();
+  return `<div class="kpi-row">
+    <div class="kpi"><div class="k-label">Recipes</div>
+      <div class="k-value">${recipes.length}</div>
+      <div class="k-sub">${thisMonth?`+${thisMonth} this month`:'none added this month'}</div>
+      ${sparkBars(addedPerMonth)}</div>
+    <div class="kpi"><div class="k-label">Meals cooked</div>
+      <div class="k-value">${totalCooked()}</div>
+      <div class="k-sub">${cooksInLastDays(30)} in the last 30 days</div>
+      ${sparkBars(cooksPerMonth)}</div>
+    <div class="kpi"><div class="k-label">Average rating</div>
+      <div class="k-value">${avg?avg.toFixed(1):'—'}</div>
+      <div class="k-sub">${ratedRecipes().length} rated recipe${ratedRecipes().length===1?'':'s'}</div></div>
+    <div class="kpi ${never?'kpi-nudge':''}"><div class="k-label">Never cooked</div>
+      <div class="k-value">${never}</div>
+      <div class="k-sub">${never?'waiting for a first try':'every recipe has been made'}</div></div>
+  </div>`;
+}
+
+/* ---------- cook this tonight ---------- */
+function tonightCandidates(){
+  return recipes.filter(r=>r.instructions.length || r.ingredients.length);
+}
+function pickTonight(){
+  const pool = tonightCandidates();
+  if(!pool.length){ state.tonightId=null; return; }
+  const score = r => {
+    const rating = r.ratings.length ? avgRating(r) : 3.6;      // unrated gets a fair shake
+    const staleness = r.lastCookedAt
+      ? Math.min(1, (Date.now()-r.lastCookedAt)/(90*86400000))
+      : 0.8;
+    return rating*0.9 + staleness*2.2 + Math.random()*2.4;
+  };
+  const ranked = pool.map(r=>({r,k:score(r)})).sort((a,b)=>b.k-a.k);
+  const next = ranked.find(x=>x.r.id!==state.tonightId) || ranked[0];
+  state.tonightId = next.r.id;
+}
+function rerollTonight(){ pickTonight(); renderMain(); }
+function tonightReason(r){
+  const bits=[];
+  if(r.ratings.length) bits.push(`Rated ★${avgRating(r).toFixed(1)}`);
+  if(!r.timesCooked) bits.push("you've never made this one");
+  else if(r.lastCookedAt){
+    const days=Math.round((Date.now()-r.lastCookedAt)/86400000);
+    bits.push(days<1?'cooked today':days===1?'cooked yesterday':`last cooked ${days} days ago`);
+  } else bits.push(`cooked ${r.timesCooked} time${r.timesCooked===1?'':'s'}`);
+  const b = r.cookbookId ? bookById(r.cookbookId) : null;
+  if(b) bits.push(`from ${b.title}`);
+  return bits.join(' · ');
+}
+function renderTonight(){
+  let r = recipes.find(x=>x.id===state.tonightId);
+  if(!r){ pickTonight(); r = recipes.find(x=>x.id===state.tonightId); }
+  if(!r) return '';
+  const cover = coverImage(r);
+  return `
+    <div class="sec-head"><h2>🍽️ Cook this tonight</h2>
+      <button class="link" onclick="rerollTonight()">🎲 Roll again</button></div>
+    <div class="tonight">
+      <div class="t-img" onclick="openRecipe('${r.id}')">${cover
+        ? `<img src="${cover.url}" alt="${escA(r.title)}" style="${focalStyle(cover)}">`
+        : r.emoji}</div>
+      <div style="min-width:0;">
+        <h3>${esc(r.title)}</h3>
+        <div class="t-why">${esc(tonightReason(r))}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="icon-btn primary" onclick="openRecipe('${r.id}')">Open recipe</button>
+          <button class="icon-btn" onclick="addRecipeToShoppingList('${r.id}')">🛒 Add ingredients</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ---------- pantry matcher ---------- */
+function addPantryItem(){
+  const el=document.getElementById('pantryInput');
+  const v=titleCase(el.value);
+  if(!v) return;
+  if(!state.pantry.includes(v)) state.pantry.push(v);
+  el.value='';
+  renderMain();
+  const again=document.getElementById('pantryInput'); if(again) again.focus();
+}
+function removePantryItem(i){ state.pantry.splice(i,1); renderMain(); }
+function pantryMatches(){
+  if(!state.pantry.length) return [];
+  const have = state.pantry.map(normIng);
+  return recipes.map(r=>{
+    const names = r.ingredients.map(i=>normIng(i.name));
+    const usedYours = have.filter(h=>names.some(n=>n===h||n.includes(h)||h.includes(n))).length;
+    const missing = names.filter(n=>!have.some(h=>n===h||n.includes(h)||h.includes(n))).length;
+    return {r, usedYours, missing};
+  }).filter(m=>m.usedYours>0)
+    .sort((a,b)=> b.usedYours-a.usedYours || a.missing-b.missing)
+    .slice(0,6);
+}
+function renderPantry(){
+  const matches=pantryMatches();
+  return `
+    <div class="sec-head"><h2 style="font-size:17px;">🥫 What's in your pantry</h2></div>
+    <div class="pantry-box">
+      <div class="subtle" style="margin:0 0 10px;font-size:12.5px;">
+        List what you have on hand and see what it gets you.</div>
+      <div class="chiprow">
+        ${state.pantry.map((p,i)=>`<span class="ichip">${esc(p)}
+          <button class="x" onclick="removePantryItem(${i})" title="Remove">×</button></span>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="pantryInput" placeholder="e.g. chicken, rice, butter"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();addPantryItem();}"
+          style="flex:1;padding:9px 12px;border-radius:9px;border:1px solid var(--line);font-size:13.5px;">
+        <button class="icon-btn" onclick="addPantryItem()">+ Add</button>
+      </div>
+      ${state.pantry.length===0
+        ? `<div class="empty" style="padding:18px 0 4px;font-size:13px;">
+            Add an ingredient or two to see what you could cook.</div>`
+        : matches.length===0
+          ? `<div class="empty" style="padding:18px 0 4px;font-size:13px;">
+              Nothing in your collection uses ${state.pantry.length===1?'that':'those'} yet.</div>`
+          : `<div style="margin-top:14px;">${matches.map(m=>`
+              <div class="match" onclick="openRecipe('${m.r.id}')">
+                <div class="m-ico">${m.r.emoji}</div>
+                <div style="flex:1;min-width:0;">
+                  <div class="m-name">${esc(m.r.title)}</div>
+                  <div class="m-uses">uses ${m.usedYours} of your ${state.pantry.length}</div>
+                </div>
+                <span class="m-have ${m.missing===0?'m-full':'m-near'}">${
+                  m.missing===0?'have it all':`needs ${m.missing} more`}</span>
+              </div>`).join('')}</div>`}
+    </div>`;
+}
+
+/* ---------- category magnitudes ---------- */
+function renderCategoryChart(){
+  const counts=new Map();
+  recipes.forEach(r=>r.categories.forEach(c=>counts.set(c,(counts.get(c)||0)+1)));
+  const rows=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,7);
+  const max=Math.max(1,...rows.map(r=>r[1]));
+  return `
+    <div class="sec-head"><h2 style="font-size:17px;">📊 Recipes by category</h2></div>
+    <div class="panel">
+      ${rows.length===0?`<div class="empty" style="padding:12px 0;font-size:13px;">No categories yet.</div>`
+      :`<div class="barchart">${rows.map(([name,n])=>`
+        <button class="barrow" onclick="browseCategory('${escA(name)}')" title="Browse ${escA(name)}">
+          <span class="b-name">${esc(name)}</span>
+          <span class="track"><span class="fill" style="width:${Math.round(n/max*100)}%"></span></span>
+          <span class="num">${n}</span>
+        </button>`).join('')}</div>
+      <div class="subtle" style="margin:14px 0 0;font-size:12px;">Click a bar to browse that category.</div>`}
+    </div>`;
+}
+function browseCategory(name){
+  state.searchQuery=''; state.categoryFilter=name; state.sortBy='mostUsed'; goto('browse');
+}
+
+/* ---------- activity calendar ---------- */
+function activityByDay(){
+  const m=new Map();
+  (activity||[]).forEach(a=>m.set(a.day,a.n));
+  return m;
+}
+function cookStreakWeeks(map){
+  let streak=0;
+  for(let w=0; w<52; w++){
+    const end=new Date(); end.setDate(end.getDate()-w*7);
+    let any=false;
+    for(let d=0; d<7; d++){
+      const day=new Date(end); day.setDate(day.getDate()-d);
+      if(map.get(day.toISOString().slice(0,10))) { any=true; break; }
+    }
+    if(any) streak++; else break;
+  }
+  return streak;
+}
+const ACTIVITY_RANGES = [
+  // cell = the size a square wants to be; it shrinks to fit when the range is
+  // long, so short ranges get chunky readable squares instead of a stranded strip
+  {key:'3m', label:'3M', weeks:14, name:'3 months', cell:44},
+  {key:'6m', label:'6M', weeks:27, name:'6 months', cell:24},
+  {key:'1y', label:'1Y', weeks:53, name:'year',     cell:13},
+];
+function setActivityRange(key){ state.activityRange=key; renderMain(); }
+
+function renderActivity(){
+  const map=activityByDay();
+  const range = ACTIVITY_RANGES.find(r=>r.key===state.activityRange)
+    || ACTIVITY_RANGES[ACTIVITY_RANGES.length-1];
+  const WEEKS = range.weeks;
+  const today=new Date();
+  const end=new Date(today); end.setDate(end.getDate()+(6-end.getDay()));   // end of this week
+  // Month labels crowd as columns get thinner, so demand more spacing at longer ranges.
+  const minGap = WEEKS>40 ? 4 : WEEKS>20 ? 3 : 2;
+  const showNums = range.cell >= 34;
+
+  let cols='', monthRow='', lastMonth='', lastLabelCol=-9, inRange=0, daysWithCooking=0;
+  for(let w=WEEKS-1, col=0; w>=0; w--, col++){
+    const colStart=new Date(end); colStart.setDate(colStart.getDate()-w*7-6);
+    const mon=colStart.toLocaleDateString(undefined,{month:'short'});
+    // a wider gap wherever a new month begins, so month boundaries read at a glance
+    const boundary = (mon!==lastMonth && col>0) ? ' month-start' : '';
+    const label = (mon!==lastMonth && col-lastLabelCol>=minGap) ? mon : '';
+    if(label) lastLabelCol=col;
+    monthRow += `<span class="hm${boundary}">${label}</span>`;
+    lastMonth=mon;
+
+    let cells='';
+    for(let d=0; d<7; d++){
+      const day=new Date(colStart); day.setDate(day.getDate()+d);
+      const key=day.toISOString().slice(0,10);
+      const n=map.get(key)||0;
+      const future=day>today;
+      if(!future){ inRange+=n; if(n) daysWithCooking++; }
+      const lvl=n===0?0:n===1?1:n===2?2:n<=3?3:4;
+      const nice=day.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+      // once squares are big enough to read, the count goes inside them
+      const inner = (showNums && n && !future) ? `<b class="hc-n${lvl>=3?' on-dark':''}">${n}</b>` : '';
+      cells += `<div class="heat-cell${future?' future':''}" style="background:var(--seq-${lvl})"
+        title="${nice} — ${n} meal${n===1?'':'s'}">${inner}</div>`;
+    }
+    cols += `<div class="heat-col${boundary}">${cells}</div>`;
+  }
+  const streak=cookStreakWeeks(map);
+  const totalAll=[...map.values()].reduce((a,b)=>a+b,0);
+
+  return `
+    <div class="sec-head"><h2>📅 Cooking activity</h2>
+      <div class="range-group no-print">
+        ${ACTIVITY_RANGES.map(r=>`<button class="range-btn ${r.key===range.key?'on':''}"
+          onclick="setActivityRange('${r.key}')">${r.label}</button>`).join('')}
+      </div></div>
+    <div class="panel" style="margin-bottom:32px;">
+      ${totalAll===0?`<div class="empty" style="padding:10px 0 18px;">
+        Nothing logged yet. Every time you hit <b>I cooked this</b> or rate a recipe from now on,
+        a square lights up here.</div>`
+      :`<div class="heat-summary"><b>${inRange}</b> meal${inRange===1?'':'s'} over the past ${range.name}
+         · cooked on <b>${daysWithCooking}</b> day${daysWithCooking===1?'':'s'}</div>`}
+      <div class="heat-wrap" style="--cell:${range.cell}px">
+        <div class="heat-days${range.cell>=20?'':' compact'}">${
+          (range.cell>=20
+            ? ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+            : ['S','M','T','W','T','F','S']
+          ).map(d=>`<span>${d}</span>`).join('')}</div>
+        <div class="heat-inner">
+          <div class="heat-months">${monthRow}</div>
+          <div class="heat">${cols}</div>
+        </div>
+      </div>
+      <div class="heat-legend">
+        <span>Less</span>
+        ${[0,1,2,3,4].map(l=>`<span class="sw" style="background:var(--seq-${l})"></span>`).join('')}
+        <span>More</span>
+        ${streak>0?`<span class="streak">🔥 ${streak}-week streak</span>`:''}
+      </div>
+    </div>`;
+}
+
+/* ---------- cookbook shelf ---------- */
+function renderShelf(){
+  if(!cookbooks.length) return '';
+  const tones=['linear-gradient(150deg,#C1673B,#8E4526)','linear-gradient(150deg,#6B7A4F,#4A5636)',
+    'linear-gradient(150deg,#4A3F6B,#2E2745)','linear-gradient(150deg,#C99A3A,#96701F)',
+    'linear-gradient(150deg,#8E6A55,#5E4536)'];
+  return `
+    <div class="sec-head"><h2>📚 Your shelf</h2>
+      <button class="link" onclick="goto('cookbooks')">All cookbooks →</button></div>
+    <div class="shelf">
+      ${cookbooks.map((b,i)=>{
+        const cover=bookCover(b), n=recipesInBook(b.id).length;
+        return `<div class="spine" onclick="openCookbook('${b.id}')">
+          <div class="cov" style="${cover?'':'background:'+tones[i%tones.length]+';'}">
+            ${cover?`<img src="${cover.url}" alt="${escA(b.title)}" style="${focalStyle(cover)}">`:b.emoji}</div>
+          <div class="nm">${esc(b.title)}</div>
+          <div class="ct">${n} recipe${n===1?'':'s'}</div>
+        </div>`;}).join('')}
+    </div>`;
+}
+
+/* ---------- tidy-up prompts ---------- */
+function tidyItems(){
+  const out=[];
+  for(const r of recipes){
+    if(!r.instructions.length) out.push({r,tag:'no steps',act:'Finish it',fn:`startEditRecipe('${r.id}')`});
+    else if(!(r.images||[]).length) out.push({r,tag:'no photo',act:'Add one',fn:`openRecipe('${r.id}')`});
+    else if(!r.ratings.length) out.push({r,tag:'never rated',act:'Rate it',fn:`openRecipe('${r.id}')`});
+    else if(cookbooks.length && !r.cookbookId) out.push({r,tag:'no source',act:'Link a book',fn:`startEditRecipe('${r.id}')`});
+  }
+  return out.slice(0,5);
+}
+function renderTidy(){
+  const items=tidyItems();
+  if(!items.length) return '';
+  return `
+    <div class="sec-head"><h2>✨ Needs a little love</h2>
+      <span class="subtle" style="margin:0;">tidy-up suggestions</span></div>
+    <div class="panel" style="margin-bottom:32px;">
+      ${items.map(t=>`<div class="tidy">
+        <span class="t-tag">${t.tag}</span>
+        <span class="t-name">${esc(t.r.title)}</span>
+        <button class="icon-btn sm" onclick="${t.fn}">${t.act}</button>
+      </div>`).join('')}
+    </div>`;
+}
+
+/* ---------- the page ---------- */
 function viewHome(){
   const cooked=mostCooked(3);
-  let discover=(state.discoverIds||[]).map(id=>recipes.find(r=>r.id===id)).filter(Boolean);
-  if(discover.length<Math.min(3,recipes.length)){ shuffleDiscover(); discover=(state.discoverIds||[]).map(id=>recipes.find(r=>r.id===id)).filter(Boolean); }
   const feed=recentActivity(6);
   const top=topRanked(10);
+  const topMax=Math.max(1,...top.map(r=>r.timesCooked||0));
+
+  if(!recipes.length){
+    return `
+      <div class="home-hero">
+        <h1>Welcome to your pantry</h1>
+        <p>Nothing in here yet — add your first recipe and this page fills itself in.</p>
+        <div style="margin-top:20px;"><button class="icon-btn primary" onclick="startAddRecipe()">+ Add your first recipe</button></div>
+      </div>`;
+  }
+
   return `
     <div class="home-hero">
       <h1>What are you cooking today?</h1>
-      <p>${recipes.length} recipes · ${globalSubs.length} substitutions · ${recipes.reduce((a,r)=>a+r.timesCooked,0)} meals cooked</p>
+      <p>${recipes.length} recipe${recipes.length===1?'':'s'} · ${globalSubs.length} substitutions ·
+         ${totalCooked()} meal${totalCooked()===1?'':'s'} cooked</p>
       <div class="home-search">
         <input id="homeSearch" type="text" placeholder="Search recipes by name, ingredient, cookbook, or tag..."
           onkeydown="if(event.key==='Enter'){event.preventDefault();runHomeSearch();}">
         <button class="icon-btn primary" onclick="runHomeSearch()">🔍 Search</button>
       </div>
     </div>
+
+    ${renderKpiRow()}
+
     <div class="home-grid">
       <div>
+        ${renderTonight()}
+
+        <div class="split-2">
+          <div>${renderPantry()}</div>
+          <div>${renderCategoryChart()}</div>
+        </div>
+
         <div class="home-sec">
           <div class="sec-head"><h2>🔥 Most Cooked</h2>
             <button class="link" onclick="state.searchQuery='';state.sortBy='mostUsed';goto('browse')">See all →</button></div>
-          ${cooked.length?`<div class="grid">${cooked.map(recipeCard).join('')}</div>`
+          ${cooked.length?`<div class="grid">${cooked.map((r,i)=>rankedCard(r,i)).join('')}</div>`
             :`<div class="empty">Cook something and it'll show up here.</div>`}
         </div>
-        <div class="home-sec">
-          <div class="sec-head"><h2>✨ Rediscover</h2>
-            <button class="link" onclick="refreshDiscover()">🔄 Shuffle</button></div>
-          <p class="subtle" style="margin:-8px 0 14px;">Recipes you haven't made much lately — so they don't get lost in the pile.</p>
-          ${discover.length?`<div class="grid">${discover.map(recipeCard).join('')}</div>`
-            :`<div class="empty">Add a few more recipes to start getting suggestions.</div>`}
-        </div>
+
+        ${renderActivity()}
+        ${renderShelf()}
+        ${renderTidy()}
       </div>
+
       <div>
         <div class="side-card">
-          <h3>💬 Latest Ratings & Comments</h3>
+          <h3>💬 Latest Ratings &amp; Comments</h3>
           <div class="side-sub">Newest activity across all your recipes</div>
-          ${feed.length?feed.map(f=>`
-            <div class="feed-item">
+          ${feed.length?feed.map(f=>{
+            const cov=coverImage(f.r);
+            return `<div class="feed-item">
               <div class="feed-top">
+                <span class="feed-thumb">${cov
+                  ? `<img src="${cov.url}" alt="" style="${focalStyle(cov)}">` : f.r.emoji}</span>
                 <button class="feed-link" onclick="openRecipe('${f.r.id}')">${esc(f.r.title)}</button>
                 <span class="stars" style="font-size:12px;">${'★'.repeat(f.c.stars)}${'☆'.repeat(5-f.c.stars)}</span>
               </div>
-              ${f.c.comment?`<div class="ftext">"${esc(f.c.comment)}"</div>`:`<div class="ftext" style="color:var(--ink-soft);">Rated with no comment</div>`}
+              ${f.c.comment?`<div class="ftext">"${esc(f.c.comment)}"</div>`
+                :`<div class="ftext" style="color:var(--ink-soft);">Rated with no comment</div>`}
               <div class="fdate">${f.c.date}</div>
-            </div>`).join('')
+            </div>`;}).join('')
           :`<div class="empty" style="padding:12px 0;font-size:13px;">No ratings yet.</div>`}
         </div>
+
         <div class="side-card">
           <h3>🏆 Top 10 Recipes</h3>
           <div class="side-sub">Ranked by rating, then times cooked</div>
           ${top.map((r,i)=>`
             <div class="top-item">
               <span class="rank ${i<3?'gold':''}">${i+1}</span>
-              <div style="min-width:0;">
+              <div style="min-width:0;flex:1;">
                 <button class="feed-link" onclick="openRecipe('${r.id}')">${esc(r.title)}</button>
                 <div class="cats">${r.categories.join(' · ')}</div>
+                <div class="top-bar"><span style="width:${Math.round((r.timesCooked||0)/topMax*100)}%"></span></div>
                 <div class="tmeta">${r.ratings.length?`★ ${avgRating(r).toFixed(1)} (${r.ratings.length})`:'unrated'} · 👨‍🍳 ${r.timesCooked}×</div>
               </div>
             </div>`).join('')}
@@ -434,6 +787,12 @@ function viewHome(){
     </div>`;
 }
 
+/* A Most Cooked card with its rank badge. */
+function rankedCard(r, i){
+  const medal = ['①','②','③'][i] || '';
+  return recipeCard(r).replace('<div class="thumb">',
+    `<span class="rank-medal">${medal}</span><div class="thumb">`);
+}
 
 /* ============ COOKBOOKS ============ */
 function openCookbook(id){
@@ -803,10 +1162,10 @@ function setTab(t){ state.detailTab=t; state.showRecipeSubForm=false; renderMain
 function setScale(id,m){ state.scale[id]=m; renderMain(); }
 async function logCooked(id){
   try{
-    const res=await api('/api/recipes/'+id+'/cook',{method:'POST'});
+    await apiJSON('/api/recipes/'+id+'/cook','POST');
     const r=recipes.find(x=>x.id===id);
-    if(r) r.timesCooked=res.timesCooked;
-    render(); toast(`Logged! You've cooked this ${res.timesCooked} time${res.timesCooked===1?'':'s'}.`);
+    const n=r?r.timesCooked:0;
+    render(); toast(`Logged! You've cooked this ${n} time${n===1?'':'s'}.`);
   }catch(e){ apiError(e); }
 }
 function viewDetail(){
@@ -1585,7 +1944,7 @@ function viewShopping(){
     <h1 class="title">Shopping List</h1>
     <p class="subtle">Ingredients pulled from recipes, plus anything you add by hand. Each item shows substitutions from your library.</p>
     <div class="controls no-print">
-      <div class="search-wrap" style="flex:2;"><input id="manualItem" type="text" placeholder="Add an item manually, e.g. paper towels" style="padding-left:14px;"></div>
+      <div class="search-wrap" style="flex:2;"><input id="manualItem" type="text" placeholder="Add an item manually, e.g. olive oil" style="padding-left:14px;"></div>
       <button class="icon-btn primary" onclick="addManualShopItem()">+ Add</button>
       <button class="icon-btn" onclick="window.print()">🖨️ Print list</button>
       <button class="icon-btn" onclick="clearChecked()">Clear checked</button>
@@ -1627,7 +1986,6 @@ async function boot(){
     applyState(state0);
     scanEnabled = !!(me && me.scanEnabled);
     userEmail = (me && me.email) || null;
-    shuffleDiscover();
     render();
   }catch(e){
     document.getElementById('app').innerHTML =
