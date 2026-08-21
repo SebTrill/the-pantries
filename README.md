@@ -46,11 +46,7 @@ npx wrangler login          # opens a browser — no API token needed
 
 ### Stage 1 — get it live on the free URL
 
-**1. Create the database.** Copy the id it prints and paste it into `wrangler.jsonc`
-where it says `PLACEHOLDER_DATABASE_ID`:
-```bash
-npx wrangler d1 create pantries-db
-```
+**1. The database is already created and wired into `wrangler.jsonc`.**
 
 **2. Create the photo bucket:**
 ```bash
@@ -164,8 +160,23 @@ npx wrangler secret put SITE_PASSWORD
 and `src/index.js`. It normalizes names (drops everything after a comma, handles plurals)
 and matches loosely, which is why "Butter" also matches "Butter, Melted".
 
+**Change the look** — `public/styles.css` holds the whole design in one place. The palette
+lives in `:root` at the top: a brown-black ground with ochre, brick and olive accents drawn
+from printing inks rather than screen colours. Three typefaces, each with one job — Bevan
+(slab) for headings and numerals, Petrona for anything you read while cooking, IBM Plex Mono
+for quantities and labels. All three are self-hosted in `public/fonts/`, so there is no
+third-party font request and the site works offline.
+
+Bevan has no light weights and gets clumsy below about 15px — keep it to headings, section
+labels and big numbers, never body text or dense UI.
+
 **Change photo size on upload** — the `max` argument in `downscale()` in `public/app.js`,
 currently 1400px. Photos are re-encoded as JPEG before upload to keep the site quick.
+
+**Migrations** live in the repo root as `migrate-00N-*.sql` and are meant to be pasted into
+the D1 Console and executed. They are all additive and safe to re-run. Run them in order;
+`migrate-005-local-days.sql` is the most recent and repairs cook days that were recorded in
+UTC.
 
 **Add a field to every recipe** (prep time, source, oven temperature) — this one needs a
 migration, since existing rows need the new column:
@@ -176,7 +187,36 @@ then surface it in `saveRecipe()`, `loadRecipes()`, and the edit form.
 
 ---
 
-## Two details that are easy to break
+## The URL is derived from state, never the other way round
+
+Every view is a real page — `/home`, `/browse-recipes`, `/recipe?id=…`, `/recipe/edit?id=…`,
+`/browse-cookbooks`, `/cookbook?id=…`, `/cookbook/edit`, `/shopping-list`, `/substitutions`,
+`/add-recipe`. Back, forward, refresh and bookmarks all work, and a link to a recipe is a
+link to that recipe.
+
+The rule that keeps it simple: `urlForState()` computes the address from the current view,
+and `render()` calls `syncUrl()` at the end. No navigation has to remember to update the
+URL — it just falls out. Going the other way, `applyUrl()` reads the address into state and
+runs on first load and on `popstate`. Deep links that name a record (`/recipe?id=…`) need
+the data loaded first, which is why `applyUrl()` runs after `/api/bootstrap` returns rather
+than at page load.
+
+If you add a view, add it to both `urlForState()` and `applyUrl()`. Miss one and the address
+bar and the page quietly disagree.
+
+The Worker serves the app shell for any non-API path without a file extension that the asset
+server doesn't recognise, so a hard refresh on `/recipe/edit` works.
+
+---
+
+## Three details that are easy to break
+
+**Calendar days come from the browser, not the server.** The Worker's clock is UTC. Stamp a
+cook's day from it and a meal cooked at 7pm in Chicago is filed under tomorrow — logged, but
+on the wrong square. So the browser sends its own local date with every cook and rating, the
+Worker sanity-checks it (`localDay()` in `src/index.js`), and every day-key on the client is
+built from `localDay()` rather than `toISOString()`. If you ever reach for
+`toISOString().slice(0,10)` to get "today", you have just reintroduced this bug.
 
 **Quantities are stored twice, on purpose.** `qty` is a number for scaling maths; `qty_raw`
 is the text exactly as typed. If you ever collapse those into one field, `1/2` will silently
