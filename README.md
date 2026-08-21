@@ -238,6 +238,51 @@ to find its ambiguous mentions, so the two can never disagree about which occurr
 
 ---
 
+## The cookbook page
+
+It reads as a table of contents, because that is what you want when you are holding the book: page
+number first, ordered by page. Recipes whose page you never wrote down collect under a "No page
+recorded" heading rather than interleaving invisibly, so the gap is countable.
+
+**Why this needed fixing:** `cardSourceLine()` suppresses the "from this book" line on a cookbook's own
+page — correctly, since every card would repeat the same title. But the page number lived on that line,
+so it disappeared with it. The one screen where the page number matters most was the one screen that
+did not show it.
+
+`pageNum()` reads the first integer out of the free-text page field, so "112", "p. 44" and "44-45" all
+sort. Anything without a digit counts as unrecorded.
+
+Book notes edit in place, and unlike a recipe this can safely go through `PUT /api/cookbooks/:id` —
+that endpoint only touches columns, while photos and files live in their own table. The recipe
+equivalent needs its own PATCH; see the warning further down.
+
+---
+
+## Ways into a recipe
+
+Four: type it in, from a link, copy one you have, scan a photo. Typing one in from scratch is the least
+common way you actually acquire a recipe, and for a long time it was one of only two.
+
+**Copying** resets what was earned rather than given — cook count, ratings, `lastCookedAt` — and drops
+photos, which live in object storage keyed to the original recipe.
+
+**From a link** reads the schema.org JSON-LD that most recipe sites publish for search engines. No
+markup guessing, no model call, no API key. `findRecipeNode()` handles the shapes that actually occur:
+bare, in an array, under `@graph` (what WordPress emits), and `@type` arrays that merely include
+"Recipe". `flattenInstructions()` handles strings, `HowToStep`, and `HowToSection` wrapping more steps.
+
+One trap worth remembering there: when instructions arrive as a blob of HTML, block tags are the step
+boundaries, so they are converted to newlines and **split before** `stripTags` runs. Stripping first
+collapses all whitespace — newlines included — and every paragraph merges into one run-on step.
+
+Both a copy and an import arrive holding real work before you have typed anything, so
+`markEditBaseline(true)` marks them dirty from the start and the unsaved-work guard covers them.
+
+Ingredients from a link go through the same `parseIngredientLine()` the paste-a-list dialog uses, so
+"1 1/2 cups flour" splits identically however it arrived.
+
+---
+
 ## The browse pages
 
 Filters have to answer three questions at once: how many of your recipes you are looking at, what is
