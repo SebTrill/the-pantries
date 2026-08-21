@@ -74,7 +74,7 @@ const storeSig = () => sigOf({recipes, cookbooks, globalSubs, allCategories, sho
  *  throw away whatever is being typed. */
 function safeToRefresh(){
   if (['editRecipe','editCookbook','scanning'].includes(state.view)) return false;
-  if (modalCfg || focalDraft) return false;
+  if (modalCfg || focalDraft || state.notesDraft) return false;
   if (busyDepth > 0) return false;
   return true;
 }
@@ -152,6 +152,13 @@ let state = {
   expandedShopSubs:{},   // shoppingItemId -> bool
   showRecipeSubForm:false,
   collapsed:{},          // home sections folded away — deliberately memory-only
+  mentionChoices:{},     // per-mention "swap this word or not", also memory-only
+  subScope:'all',        // library page filter: all / library / recipe-only / unused
+  expandedSubGroups:{},  // which ingredient groups have their recipe list open
+  showSubAddForm:false,
+  recipeSubSearch:'',    // filter inside a recipe's substitutions tab
+  notesDraft:null,       // {id,text} while notes are being edited in place
+  showRateForm:false,
 };
 let focusId=null, focusPos=null;
 
@@ -383,7 +390,7 @@ const blankRecipeDraft = () => ({
   id:null,title:'',categories:['Dinner'],tags:[],dateAdded:localDay(),
   baseServings:4,emoji:'🍽️',ingredients:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],
   instructions:[''],ratings:[],timesCooked:0,localSubs:[],images:[],
-  notes:'',cookbookId:null,cookbookPage:'',
+  notes:'',cookbookId:null,cookbookPage:'',prepMinutes:0,cookMinutes:0,
 });
 const blankBookDraft = () => ({
   id:null,title:'',author:'',publisher:'',published:'',edition:'',isbn:'',notes:'',emoji:'📕',
@@ -395,7 +402,8 @@ function applyUrl(){
   state.showRecipeSubForm = false;
 
   if(path === '/recipe' && id){
-    state.view='detail'; state.currentRecipeId=id; state.detailTab='ingredients';
+    state.view='detail'; state.currentRecipeId=id; state.detailTab='instructions';
+    state.recipeSubSearch=''; state.showRateForm=false; state.notesDraft=null;
     if(!state.scale[id]) state.scale[id]=1;
     return;
   }
@@ -451,10 +459,11 @@ function attemptNav(fn){
     });
   } else fn();
 }
-function goto(view){ attemptNav(()=>{ state.view=view; state.detailTab='ingredients'; state.showRecipeSubForm=false; render(); }); }
+function goto(view){ attemptNav(()=>{ state.view=view; state.detailTab='instructions'; state.showRecipeSubForm=false; render(); }); }
 function openRecipe(id){
-  state.view='detail'; state.currentRecipeId=id; state.detailTab='ingredients';
-  state.showRecipeSubForm=false; state.starDraft=0;
+  state.view='detail'; state.currentRecipeId=id; state.detailTab='instructions';
+  state.showRecipeSubForm=false; state.starDraft=0; state.recipeSubSearch='';
+  state.showRateForm=false; state.notesDraft=null;
   if(!state.scale[id]) state.scale[id]=1;
   render();
 }
@@ -1360,6 +1369,335 @@ async function logCooked(id){
     render(); toast(`Logged! You've cooked this ${n} time${n===1?'':'s'}.`);
   }catch(e){ apiError(e); }
 }
+
+/* ---- how long, how recently, how often ---- */
+function fmtMinutes(n){
+  if(!n) return '—';
+  if(n<60) return `${n} <small>MIN</small>`;
+  const h=Math.floor(n/60), m=n%60;
+  return m ? `${h} <small>HR</small> ${m}` : `${h} <small>HR</small>`;
+}
+function totalMinutes(r){ return (r.prepMinutes||0)+(r.cookMinutes||0); }
+function agoLabel(ts){
+  if(!ts) return null;
+  const days=Math.floor((Date.now()-ts)/86400000);
+  if(days<=0) return ['Today',''];
+  if(days===1) return ['Yesterday',''];
+  if(days<31) return [String(days),'DAYS AGO'];
+  const months=Math.round(days/30.44);
+  if(months<24) return [String(months), months===1?'MONTH AGO':'MONTHS AGO'];
+  return [String(Math.round(days/365)),'YEARS AGO'];
+}
+/** Six months of this recipe's own cooking, for the bar under the count. */
+function recipeMonthBars(r){
+  const months=lastSixMonthKeys();
+  const counts=months.map(m=>(r.cookMonths&&r.cookMonths[m])||0);
+  const max=Math.max(1,...counts);
+  if(!counts.some(Boolean)) return '';
+  return `<div class="histbar">${counts.map((n,i)=>
+    `<i class="${i===counts.length-1&&n?'hi':''}" style="height:${Math.max(8,Math.round(n/max*100))}%"
+       title="${months[i]}: ${n}"></i>`).join('')}</div>`;
+}
+function renderFacts(r){
+  const last=agoLabel(r.lastCookedAt);
+  const avg=avgRating(r);
+  const cell=(label,value,extra)=>`<div class="fact"><div class="fl">${label}</div>
+    <div class="fv">${value}</div>${extra||''}</div>`;
+  return `<div class="facts-row">
+    ${cell('Prep', fmtMinutes(r.prepMinutes))}
+    ${cell('Cook', fmtMinutes(r.cookMinutes))}
+    ${cell('Serves', esc(String(r.baseServings)))}
+    ${cell('Rating', r.ratings.length
+        ? `<span style="color:var(--ochre);">★ ${avg.toFixed(1)}</span> <small>(${r.ratings.length})</small>`
+        : '—')}
+    ${cell('Last made', last ? `${last[0]} ${last[1]?`<small>${last[1]}</small>`:''}` : '—')}
+    ${cell('Cooked', `${r.timesCooked}×`, recipeMonthBars(r))}
+  </div>`;
+}
+
+/* ---- notes, edited where you read them ---- */
+function startNotesEdit(id){
+  const r=recipes.find(x=>x.id===id); if(!r) return;
+  state.notesDraft={id, text:r.notes||''};
+  renderMain();
+  const el=document.getElementById('notesDraft');
+  if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+}
+function cancelNotesEdit(){ state.notesDraft=null; renderMain(); }
+async function saveNotesEdit(id){
+  const el=document.getElementById('notesDraft');
+  const text=el?el.value:'';
+  try{
+    // a notes-only endpoint: PUT would rebuild the recipe and drop every ingredient
+    await apiJSON('/api/recipes/'+id+'/notes','PATCH',{notes:text});
+    state.notesDraft=null;
+    render(); toast('Notes saved.');
+  }catch(e){ apiError(e); }
+}
+function renderNotesBand(r){
+  const editing = state.notesDraft && state.notesDraft.id===r.id;
+  if(editing){
+    return `<div class="notes-band editing no-print">
+      <span class="nlabel">📝 Your notes</span>
+      <textarea id="notesDraft" rows="4"
+        placeholder="Tweaks you made, what to serve it with, who liked it...">${esc(state.notesDraft.text)}</textarea>
+      <div class="note-btns">
+        <button class="icon-btn" onclick="cancelNotesEdit()">Cancel</button>
+        <button class="icon-btn primary" onclick="saveNotesEdit('${r.id}')">💾 Save notes</button>
+      </div>
+    </div>`;
+  }
+  const has=(r.notes||'').trim();
+  return `<div class="notes-band">
+    <span class="nlabel">📝 Your notes</span>
+    ${has ? `<div class="notes-body">${esc(r.notes)}</div>`
+          : `<div class="notes-empty">Nothing yet — things like "double the garlic" or
+             "add ten minutes if you're doubling it" go here.</div>`}
+    <button class="edit-inline no-print" onclick="startNotesEdit('${r.id}')">✏️ Edit</button>
+  </div>`;
+}
+
+/* ---- ingredient mentions inside the instructions ----
+ *
+ * Applying a substitution rewrites the steps to match: "cream the butter" reads
+ * "cream the coconut oil". Two rules keep that honest.
+ *
+ * First, a swapped word is always marked, so you can tell what the app changed
+ * from what the recipe actually says — otherwise the steps quietly stop matching
+ * the book they came from.
+ *
+ * Second, a mention that OPENS a sentence is left alone by default, because that
+ * is where the cooking verb lives: "Butter a 9x5 pan" means grease the pan, not
+ * add butter. Swapping it would produce "Coconut oil a 9x5 pan", which is both
+ * nonsense and wrong advice. When one turns up we ask rather than guess, and the
+ * answer applies to that one mention only.
+ */
+function reEsc(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+/* Safe inside onclick="fn('…')" — the value crosses an HTML attribute AND a
+   JavaScript string literal, so it needs escaping for both. */
+function jsq(s){
+  return String(s==null?'':s)
+    .replace(/\\/g,'\\\\').replace(/'/g,"\\'")
+    .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+const mentionKey=(rid,ingId,step,occ)=>`${rid}|${ingId}|${step}|${occ}`;
+/** Should this particular mention be swapped? Explicit choice wins; otherwise
+ *  mid-sentence yes, sentence-initial no. */
+function mentionSwaps(rid,ingId,step,occ,sentenceInitial){
+  const c=state.mentionChoices[mentionKey(rid,ingId,step,occ)];
+  if(c!==undefined) return c;
+  return !sentenceInitial;
+}
+/** Every ingredient this recipe uses, longest name first so "brown sugar" wins
+ *  over "sugar" when both could match. */
+function stepMatchers(r,applied){
+  return r.ingredients.map(i=>{
+    const from=normIng(i.name);
+    return from ? {ingId:i.id, name:i.name, from, to:applied[i.id]?applied[i.id].substitute:null} : null;
+  }).filter(Boolean).sort((a,b)=>b.from.length-a.from.length);
+}
+/** One scan, used both to draw a step and to find its ambiguous mentions, so the
+ *  occurrence numbering can never drift between the two. */
+function scanStep(text, matchers){
+  const esced=esc(text);
+  if(!matchers.length) return {esced, hits:[]};
+  const rx=new RegExp('\\b('+matchers.map(m=>reEsc(esc(m.from))).join('|')+')(es|s)?\\b','gi');
+  const hits=[], seen={};
+  let m;
+  while((m=rx.exec(esced))!==null){
+    if(m[0]==='') { rx.lastIndex++; continue; }
+    const word=m[1].toLowerCase();
+    const matcher=matchers.find(x=>esc(x.from).toLowerCase()===word);
+    if(!matcher) continue;
+    const before=esced.slice(0,m.index).replace(/\s+$/,'');
+    const occ=(seen[matcher.ingId]||0);
+    seen[matcher.ingId]=occ+1;
+    hits.push({start:m.index, len:m[0].length, text:m[0], matcher, occ,
+               sentenceInitial: before==='' || /[.!?;:]$/.test(before)});
+  }
+  return {esced, hits};
+}
+/** A substitution is stored title-cased ("Coconut Oil") but a step reads
+ *  "cream the coconut oil". Take the casing from the word being replaced. */
+function matchCase(replacement, original){
+  const first=String(original||'').charAt(0);
+  if(!first) return replacement;
+  const rest=replacement.slice(1);
+  return /[a-z]/.test(first)
+    ? replacement.charAt(0).toLowerCase()+rest
+    : replacement.charAt(0).toUpperCase()+rest;
+}
+function renderStepHtml(r, text, stepIdx, matchers){
+  const {esced, hits}=scanStep(text, matchers);
+  let out='', at=0, swapped=0;
+  for(const h of hits){
+    if(h.start<at) continue;                       // overlapping match, keep the first
+    out+=esced.slice(at,h.start);
+    const m=h.matcher;
+    const doSwap = m.to && mentionSwaps(r.id, m.ingId, stepIdx, h.occ, h.sentenceInitial);
+    if(doSwap){
+      swapped++;
+      out+=`<button class="swapword" title="Originally ${escA(m.name)}"
+        onclick="openMentionNote(event,'${r.id}','${m.ingId}',${stepIdx},${h.occ})"
+        >${esc(matchCase(m.to, h.text))}</button>`;
+    } else if(h.sentenceInitial && !m.to){
+      out+=esced.slice(h.start, h.start+h.len);     // a verb, and nothing to offer: leave it be
+    } else {
+      out+=`<button class="ingword" title="${m.to?'Left as written':'See substitutions for '+escA(m.name)}"
+        onclick="openMentionNote(event,'${r.id}','${m.ingId}',${stepIdx},${h.occ})"
+        >${esced.slice(h.start, h.start+h.len)}</button>`;
+    }
+    at=h.start+h.len;
+  }
+  out+=esced.slice(at);
+  return {html:out, swapped};
+}
+function renderSteps(r, applied){
+  const matchers=stepMatchers(r, applied);
+  let total=0;
+  const items=r.instructions.map((s,i)=>{
+    const {html,swapped}=renderStepHtml(r, s, i, matchers);
+    total+=swapped;
+    return `<li>${html}</li>`;
+  }).join('');
+  const banner = total ? `<div class="swap-banner no-print">
+      ⇄ ${total} mention${total===1?'':'s'} swapped in these steps
+      <button onclick="undoAllSwaps('${r.id}')">↩ undo</button></div>` : '';
+  return banner + (r.instructions.length
+    ? `<ol class="steps">${items}</ol>`
+    : `<div class="empty">No steps yet. Hit Edit to write them in.</div>`);
+}
+function undoAllSwaps(recipeId){
+  delete state.appliedSubs[recipeId];
+  clearMentionChoices(recipeId);
+  render(); toast('Reverted to the original ingredients.');
+}
+function clearMentionChoices(recipeId, ingId){
+  const prefix = ingId ? `${recipeId}|${ingId}|` : `${recipeId}|`;
+  Object.keys(state.mentionChoices).forEach(k=>{
+    if(k.indexOf(prefix)===0) delete state.mentionChoices[k];
+  });
+}
+
+/* ---- the little popover on a mention ---- */
+let mentionPop=null;
+function closeMentionNote(){ if(mentionPop){ mentionPop.remove(); mentionPop=null; } }
+function openMentionNote(ev, recipeId, ingId, stepIdx, occ){
+  ev.stopPropagation();
+  closeMentionNote();
+  const r=recipes.find(x=>x.id===recipeId); if(!r) return;
+  const ing=r.ingredients.find(i=>i.id===ingId); if(!ing) return;
+  const sw=(state.appliedSubs[recipeId]||{})[ingId];
+  // nothing applied: the click is simply "show me what I could use instead"
+  if(!sw){ jumpToSubs(ing.name); return; }
+  const key=mentionKey(recipeId,ingId,stepIdx,occ);
+  const on=state.mentionChoices[key]!==undefined
+    ? state.mentionChoices[key]
+    : true;                                        // rendered as a swap, so it is on
+  const el=document.createElement('div');
+  el.className='mention-pop';
+  el.innerHTML=`
+    <div class="mp-orig">Recipe says <b>${esc(ing.name)}</b></div>
+    <button class="mp-act" onclick="setMentionChoice('${jsq(key)}',${on?'false':'true'})">
+      ${on?'↩ Leave just this one as written':'⇄ Change this one too'}</button>
+    <button class="mp-act" onclick="undoAllSwaps('${recipeId}')">↩ Undo the whole swap</button>
+    <button class="mp-act" onclick="jumpToSubs('${jsq(ing.name)}')">🔁 See substitutions</button>`;
+  document.body.appendChild(el);
+  const rect=ev.currentTarget.getBoundingClientRect();
+  const left=Math.min(window.scrollX+rect.left,
+    window.scrollX+document.documentElement.clientWidth-el.offsetWidth-10);
+  el.style.left=Math.max(window.scrollX+8, left)+'px';
+  el.style.top=(window.scrollY+rect.bottom+7)+'px';
+  mentionPop=el;
+  setTimeout(()=>document.addEventListener('click', closeMentionNote, {once:true}), 0);
+}
+function setMentionChoice(key, on){
+  state.mentionChoices[key]=on;
+  closeMentionNote();
+  renderMain();
+  toast(on?'Changed this mention.':'Left this mention as written.');
+}
+/** After applying a substitution, ask about any mention that opens a sentence
+ *  rather than quietly deciding for you. */
+function promptAmbiguousMentions(r, ingId){
+  const applied=state.appliedSubs[r.id]||{};
+  const sw=applied[ingId]; if(!sw) return;
+  const matchers=stepMatchers(r, applied);
+  const found=[];
+  r.instructions.forEach((text,i)=>{
+    scanStep(text, matchers).hits.forEach(h=>{
+      if(h.matcher.ingId===ingId && h.sentenceInitial
+         && state.mentionChoices[mentionKey(r.id,ingId,i,h.occ)]===undefined){
+        found.push({stepIdx:i, occ:h.occ, word:h.text, text});
+      }
+    });
+  });
+  if(!found.length) return;
+
+  const why=`A step that <i>opens</i> with an ingredient name is usually telling you to do something —
+    grease the pan, dust the board — rather than naming something to add. Changing it would give you
+    "${esc(sw.substitute)} a pan", which isn't what the recipe means.`;
+
+  if(found.length===1){
+    const f=found[0];
+    showModal({
+      title:'That one might be a verb',
+      body:`<p style="margin:0 0 12px;">Step ${f.stepIdx+1} begins:</p>
+        <div class="quoted">${esc(f.text)}</div>
+        <p style="margin:12px 0 0;">${why}</p>
+        <p style="margin:10px 0 0;">I've left it as written. Change this one to
+          <b>${esc(sw.substitute)}</b> as well?</p>`,
+      buttons:[
+        {label:'Leave it as written', action:()=>{
+          state.mentionChoices[mentionKey(r.id,ingId,f.stepIdx,f.occ)]=false; renderMain(); }},
+        {label:'Change this one too', style:'primary', action:()=>{
+          state.mentionChoices[mentionKey(r.id,ingId,f.stepIdx,f.occ)]=true;
+          renderMain(); toast('Changed that mention too.'); }},
+      ]
+    });
+    return;
+  }
+  showModal({
+    title:`${found.length} mentions might be verbs`,
+    body:`<p style="margin:0 0 12px;">These steps open with <b>${esc(sw.ingredientName)}</b>:</p>
+      ${found.map((f,i)=>`<label class="amb-row">
+        <input type="checkbox" id="amb${i}">
+        <span><span class="amb-step">Step ${f.stepIdx+1}</span>${esc(f.text)}</span></label>`).join('')}
+      <p style="margin:12px 0 0;">${why}</p>
+      <p style="margin:10px 0 0;">Tick any you want changed to <b>${esc(sw.substitute)}</b> anyway.</p>`,
+    buttons:[
+      {label:'Leave them all', action:()=>{
+        found.forEach(f=>{ state.mentionChoices[mentionKey(r.id,ingId,f.stepIdx,f.occ)]=false; });
+        renderMain(); }},
+      {label:'Apply ticked', style:'primary', action:()=>{
+        let n=0;
+        found.forEach((f,i)=>{
+          const el=document.getElementById('amb'+i);
+          const on=!!(el&&el.checked); if(on) n++;
+          state.mentionChoices[mentionKey(r.id,ingId,f.stepIdx,f.occ)]=on;
+        });
+        renderMain();
+        toast(n?`Changed ${n} more mention${n===1?'':'s'}.`:'Left them as written.');
+      }},
+    ]
+  });
+}
+
+/* ---- jumping from an ingredient to what could replace it ---- */
+function jumpToSubs(name){
+  closeMentionNote();
+  state.detailTab='substitutions';
+  state.recipeSubSearch=name||'';
+  state.showRecipeSubForm=false;
+  renderMain();
+  const tabs=document.getElementById('recipeTabs');
+  if(tabs) tabs.scrollIntoView({block:'nearest'});
+}
+function onRecipeSubSearch(el){
+  focusId='recipeSubSearch'; focusPos=el.selectionStart;
+  state.recipeSubSearch=el.value; renderMain();
+}
+
 function viewDetail(){
   const r=recipes.find(x=>x.id===state.currentRecipeId);
   if(!r) return `<div class="empty">Recipe not found.</div>`;
@@ -1368,6 +1706,8 @@ function viewDetail(){
   const applied=state.appliedSubs[r.id]||{};
   const nApplied=Object.keys(applied).length;
   const cover=coverImage(r);
+  const onSubs=state.detailTab==='substitutions';
+  const total=totalMinutes(r);
   return `
     <button class="back no-print" onclick="goto('browse')">← Back to recipes</button>
     ${cover?`<div class="hero"><img src="${cover.url}" alt="${escA(r.title)}" style="${focalStyle(cover)}">
@@ -1386,12 +1726,8 @@ function viewDetail(){
         <button class="icon-btn primary" onclick="window.print()">🖨️ Print</button>
       </div>
     </div>
-    <div class="rating-summary">
-      <span class="stars" style="font-size:20px;">${r.ratings.length?starString(avgRating(r)):'☆☆☆☆☆'}</span>
-      <span class="subtle" style="margin:0;">${r.ratings.length} rating${r.ratings.length!==1?'s':''}</span>
-      <span class="cooked-pill">👨‍🍳 Cooked ${r.timesCooked} time${r.timesCooked===1?'':'s'}</span>
-      ${nApplied?`<span class="swap-tag" style="margin:0;">${nApplied} temporary substitution${nApplied!==1?'s':''} active</span>`:''}
-    </div>
+    ${renderFacts(r)}
+    ${renderNotesBand(r)}
     <div class="scale-row no-print">
       <label>Scale recipe:</label>
       ${[0.5,1,2,3].map(v=>`<button class="scale-btn ${mult===v?'active':''}" onclick="setScale('${r.id}',${v})">${v===0.5?'½':v}×</button>`).join('')}
@@ -1399,24 +1735,46 @@ function viewDetail(){
       <input type="number" min="0.1" step="0.1" value="${mult}" onchange="setScale('${r.id}', parseFloat(this.value)||1)">
       <span style="color:var(--dim);font-size:12.5px;">→ serves ${Math.round(r.baseServings*mult*10)/10}</span>
     </div>
-    <div class="tabs no-print">
-      <button class="tab ${state.detailTab==='ingredients'?'active':''}" onclick="setTab('ingredients')">Ingredients</button>
-      <button class="tab ${state.detailTab==='instructions'?'active':''}" onclick="setTab('instructions')">Instructions</button>
-      <button class="tab ${state.detailTab==='substitutions'?'active':''}" onclick="setTab('substitutions')">Substitutions${pairs.length?` (${pairs.length})`:''}</button>
+
+    <div class="cook-cols">
+      <div>
+        <div class="col-head">Ingredients
+          <span>${r.ingredients.length} item${r.ingredients.length===1?'':'s'}${
+            nApplied?` · ${nApplied} swapped`:''}</span></div>
+        ${renderIngredients(r,mult,applied)}
+        <button class="icon-btn no-print" style="width:100%;margin-top:12px;"
+          onclick="addRecipeToShoppingList('${r.id}')">🛒 Add all to shopping list</button>
+      </div>
+      <div>
+        <div class="col-tabs no-print" id="recipeTabs">
+          <button class="tab ${onSubs?'':'active'}" onclick="setTab('instructions')">Instructions</button>
+          <button class="tab ${onSubs?'active':''}" onclick="setTab('substitutions')">Substitutions${pairs.length?` (${pairs.length})`:''}</button>
+          <span class="meta">${onSubs
+            ? `${nApplied} applied`
+            : `${r.instructions.length} step${r.instructions.length===1?'':'s'}${total?` · ${total} min total`:''}`}</span>
+        </div>
+        <!-- Both panels are rendered and the inactive one is hidden with CSS.
+             Leaving one out of the HTML is what used to make Print lose half the
+             recipe, since a print stylesheet can only hide what is already there. -->
+        <div class="tab-panel ${onSubs?'is-hidden':''}">${renderSteps(r, applied)}</div>
+        <div class="tab-panel no-print ${onSubs?'':'is-hidden'}">${renderSubTab(r,pairs,applied)}</div>
+      </div>
     </div>
-    ${state.detailTab==='ingredients'?renderIngredients(r,mult,applied):''}
-    ${state.detailTab==='instructions'?`<ol class="steps">${r.instructions.map(s=>`<li>${esc(s)}</li>`).join('')}</ol>`:''}
-    ${state.detailTab==='substitutions'?renderSubTab(r,pairs,applied):''}
-    ${renderNotesSection(r)}
     ${renderPhotoSection(r)}
     ${renderRatingsSection(r)}`;
 }
 function renderIngredients(r,mult,applied){
-  return `<ul class="ing-list">${r.ingredients.map(i=>{
+  return `<ul class="ing-list compact">${r.ingredients.map(i=>{
     const sw=applied[i.id];
+    const subsHere=subsForName(i.name).length + (r.localSubs||[]).filter(s=>subMatches(s.ingredient,i.name)).length;
     return `<li class="${sw?'swapped':''}">
       <span><span class="qty">${fmtQty(i.qty*mult)} ${esc(i.unit)}</span>
-      ${sw?`<s>${esc(i.name)}</s> → <b>${esc(sw.substitute)}</b><span class="swap-tag">substituted</span>`:esc(i.name)}</span>
+      ${sw
+        ? `<s>${esc(i.name)}</s> → <button class="ingword strong" onclick="jumpToSubs('${jsq(i.name)}')"
+             title="See substitutions for ${escA(i.name)}">${esc(sw.substitute)}</button><span class="swap-tag">substituted</span>`
+        : `<button class="ingword" onclick="jumpToSubs('${jsq(i.name)}')"
+             title="${subsHere?`${subsHere} substitution${subsHere===1?'':'s'} available`:'See substitutions'}"
+             >${esc(i.name)}</button>${subsHere?`<span class="sub-count">${subsHere}</span>`:''}`}</span>
       <span style="display:flex;gap:6px;" class="no-print">
         ${sw?`<button class="ing-add" style="border-color:var(--swap-line);color:var(--swap-ink);" onclick="unapplySub('${r.id}','${i.id}')">↩ undo</button>`:''}
         <button class="ing-add" onclick="addSingleIngredient('${r.id}','${i.id}')">+ list</button>
@@ -1425,7 +1783,19 @@ function renderIngredients(r,mult,applied){
   ${Object.keys(applied).length?`<div class="notice no-print" style="margin-top:14px;">⚠️ Highlighted rows are <b>temporary</b> substitutions for this cooking session only. They'll revert when you leave the recipe.</div>`:''}`;
 }
 function renderSubTab(r,pairs,applied){
+  const q=(state.recipeSubSearch||'').trim().toLowerCase();
+  const shown = q ? pairs.filter(p=>
+      p.sub.ingredient.toLowerCase().includes(q) ||
+      p.sub.substitute.toLowerCase().includes(q) ||
+      (p.sub.notes||'').toLowerCase().includes(q) ||
+      p.ing.name.toLowerCase().includes(q)) : pairs;
   return `
+    <div class="controls no-print" style="margin-bottom:14px;">
+      <div class="search-wrap"><span class="sicon">🔍</span>
+        <input id="recipeSubSearch" type="text" placeholder="Filter this recipe's substitutions..."
+          value="${escA(state.recipeSubSearch||'')}" oninput="onRecipeSubSearch(this)"></div>
+      ${q?`<button class="icon-btn sm" onclick="jumpToSubs('')">✕ Clear</button>`:''}
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;" class="no-print">
       <button class="icon-btn" onclick="refreshSubs('${r.id}')">🔄 Refresh substitutions</button>
       <button class="icon-btn ${state.showRecipeSubForm?'primary':''}" onclick="state.showRecipeSubForm=!state.showRecipeSubForm; renderMain();">+ Add substitution</button>
@@ -1438,8 +1808,11 @@ function renderSubTab(r,pairs,applied){
       <div class="form-row"><label>Notes (optional)</label><input type="text" id="rs_notes" placeholder="e.g. 1:1 ratio, slightly nuttier"></div>
       <button class="icon-btn primary" onclick="submitRecipeSub('${r.id}')">Check & add</button>
     </div>`:''}
-    ${pairs.length===0?`<div class="empty">No substitutions match this recipe's ingredients yet.<br>Add one above, or build up your library in the Substitutions section.</div>`:
-    pairs.map(p=>{
+    ${pairs.length===0
+      ? `<div class="empty">No substitutions match this recipe's ingredients yet.<br>Add one above, or build up your library in the Substitutions section.</div>`
+      : shown.length===0
+        ? `<div class="empty">Nothing here matches "${esc(state.recipeSubSearch)}".</div>`
+        : shown.map(p=>{
       const isApplied = applied[p.ing.id] && applied[p.ing.id].substitute===p.sub.substitute;
       return `<div class="sub-card">
         <div><b>${esc(p.sub.ingredient)}</b> → ${esc(p.sub.substitute)}
@@ -1449,8 +1822,11 @@ function renderSubTab(r,pairs,applied){
         <button class="icon-btn sm no-print ${isApplied?'':'primary'}" onclick="${isApplied?`unapplySub('${r.id}','${p.ing.id}')`:`applySub('${r.id}','${p.ing.id}','${p.sub.id}')`}">
           ${isApplied?'✓ Applied — undo':'Use in list'}</button>
       </div>`;
-    }).join('')}`;
+    }).join('')}
+    ${q&&shown.length&&shown.length<pairs.length?`<div class="subtle" style="margin-top:12px;font-size:12.5px;">
+      Showing ${shown.length} of ${pairs.length}.</div>`:''}`;
 }
+
 /* ---- image focal point ----
  * Cropped covers use object-position so you choose what stays in frame
  * (a book's title, a dish rather than the tablecloth) without touching the file.
@@ -1550,16 +1926,6 @@ function renderSourceLine(r){
       r.cookbookPage?` <span class="page-ref">p. ${esc(r.cookbookPage)}</span>`:''}</div>`;
 }
 
-function renderNotesSection(r){
-  const has = (r.notes||'').trim();
-  return `
-    <div class="section-head"><h2>📝 Notes</h2>
-      <button class="icon-btn sm no-print" onclick="startEditRecipe('${r.id}')">✏️ Edit notes</button></div>
-    ${has ? `<div class="notes-body">${esc(r.notes)}</div>`
-          : `<div class="empty" style="padding:16px 0;">No notes yet — things like "double the garlic" or
-             "Mom's version uses buttermilk" go here.</div>`}`;
-}
-
 function renderPhotoSection(r){
   const imgs=r.images||[];
   return `
@@ -1586,12 +1952,20 @@ function renderRatingsSection(r){
   return `
     <div class="section-head"><h2>⭐ Ratings & Comments</h2>
       <span class="subtle" style="margin:0;">${r.ratings.length} review${r.ratings.length!==1?'s':''} · avg ${r.ratings.length?(avgRating(r)).toFixed(1):'—'}</span></div>
+    ${state.showRateForm?`
     <div class="panel no-print" style="margin-bottom:18px;">
       <div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">Rate this recipe <span style="font-weight:400;color:var(--dim);">(also logs a cook — bumps your Most Used count)</span></div>
       ${[1,2,3,4,5].map(n=>`<span class="starpick ${n<=state.starDraft?'on':''}" onclick="state.starDraft=${n}; renderMain();">★</span>`).join('')}
       <textarea id="commentDraft" placeholder="Optional comment — what worked, what you'd change..." rows="2" style="width:100%;margin-top:10px;padding:10px 12px;border-radius:3px;border:1px solid var(--rule);font-size:15px;background:var(--panel);color:var(--cream);font-family:var(--body);"></textarea>
-      <button class="icon-btn primary" style="margin-top:10px;" onclick="submitRating('${r.id}')">Submit Rating</button>
-    </div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="icon-btn" onclick="state.showRateForm=false; renderMain();">Cancel</button>
+        <button class="icon-btn primary" onclick="submitRating('${r.id}')">Submit Rating</button>
+      </div>
+    </div>`:`
+    <div class="rate-fold no-print">
+      <button class="icon-btn primary" onclick="state.showRateForm=true; renderMain();">★ Rate this recipe</button>
+      <span class="subtle" style="margin:0;font-size:13.5px;">Rating also logs a cook.</span>
+    </div>`}
     ${r.ratings.length===0?`<div class="empty">No comments yet — be the first to rate it!</div>`:
     r.ratings.slice().reverse().map(c=>`<div class="comment">
       <div class="cstars">${'★'.repeat(c.stars)}${'☆'.repeat(5-c.stars)}</div>
@@ -1603,7 +1977,7 @@ async function submitRating(id){
   const stars=state.starDraft||5;
   try{
     await apiJSON('/api/recipes/'+id+'/ratings','POST',{stars,comment:c,day:localDay()});
-    state.starDraft=0;
+    state.starDraft=0; state.showRateForm=false;
     render(); toast('Rating saved — cook count updated.');
   }catch(e){ apiError(e); }
 }
@@ -1616,14 +1990,18 @@ function applySub(recipeId,ingId,subId){
   const ing=r.ingredients.find(i=>i.id===ingId);
   if(!state.appliedSubs[recipeId]) state.appliedSubs[recipeId]={};
   state.appliedSubs[recipeId][ingId]={ingredientName:ing.name, substitute:s.substitute, notes:s.notes};
-  state.detailTab='ingredients';
+  clearMentionChoices(recipeId, ingId);
+  state.detailTab='instructions';
   render(); toast(`Swapped "${ing.name}" → "${s.substitute}" (temporary)`);
+  promptAmbiguousMentions(r, ingId);
 }
 function unapplySub(recipeId,ingId){
   if(state.appliedSubs[recipeId]){
     delete state.appliedSubs[recipeId][ingId];
     if(!Object.keys(state.appliedSubs[recipeId]).length) delete state.appliedSubs[recipeId];
   }
+  clearMentionChoices(recipeId, ingId);
+  closeMentionNote();
   render(); toast('Reverted to original ingredient.');
 }
 function refreshSubs(recipeId){
@@ -1642,7 +2020,7 @@ function submitRecipeSub(recipeId){
   const ing=r.ingredients.find(i=>i.id===ingId);
   const similar=subsForName(ing.name);
 
-  const after=(msg)=>{ state.showRecipeSubForm=false; state.detailTab='substitutions'; render(); toast(msg); };
+  const after=(msg)=>{ state.showRecipeSubForm=false; state.detailTab='substitutions'; state.recipeSubSearch=''; render(); toast(msg); };
   const addLocal=async()=>{
     try{ await apiJSON('/api/substitutions','POST',
       {recipeId:r.id, ingredient:ing.name, substitute:subText, notes});
@@ -1750,7 +2128,7 @@ function applyScanResult(res){
     tags:r.tags||[], dateAdded:localDay(),
     baseServings:r.baseServings||4, emoji:r.emoji||'🍽️',
     ratings:[], timesCooked:0, localSubs:[], images:[],
-    notes:'', cookbookId:null, cookbookPage:'',
+    notes:'', cookbookId:null, cookbookPage:'', prepMinutes:0, cookMinutes:0,
     ingredients:ings, instructions:r.instructions||[],
   };
   state.scanSource={image:state.scanImage, flagged:res.flagged||[], notes:res.notes||''};
@@ -1815,11 +2193,17 @@ function viewEditRecipe(){
     </div>
     <div style="display:flex;gap:14px;flex-wrap:wrap;">
       <div class="form-row" style="flex:1;min-width:130px;"><label>Base Servings</label><input type="text" id="f_servings" value="${e.baseServings}"></div>
-      <div class="form-row" style="flex:1;min-width:130px;"><label>Emoji</label><input type="text" id="f_emoji" value="${escA(e.emoji)}"></div>
-      <div class="form-row" style="flex:1;min-width:130px;"><label>Times cooked</label>
+      <div class="form-row" style="flex:1;min-width:120px;"><label>Prep (minutes)</label>
+        <input type="text" id="f_prep" value="${e.prepMinutes||''}" placeholder="15" inputmode="numeric"></div>
+      <div class="form-row" style="flex:1;min-width:120px;"><label>Cook (minutes)</label>
+        <input type="text" id="f_cook" value="${e.cookMinutes||''}" placeholder="55" inputmode="numeric"></div>
+      <div class="form-row" style="flex:1;min-width:110px;"><label>Emoji</label><input type="text" id="f_emoji" value="${escA(e.emoji)}"></div>
+      <div class="form-row" style="flex:1;min-width:120px;"><label>Times cooked</label>
         <input type="text" id="f_cooked" value="${e.timesCooked||0}" inputmode="numeric"></div>
-      <div class="form-row" style="flex:2;min-width:200px;"><label>Tags (comma separated)</label><input type="text" id="f_tags" value="${escA(e.tags.join(', '))}"></div>
     </div>
+    <div class="subtle" style="margin:-8px 0 16px;font-size:12px;">
+      Times are optional — leave them blank and the recipe page shows a dash rather than a zero.</div>
+    <div class="form-row"><label>Tags (comma separated)</label><input type="text" id="f_tags" value="${escA(e.tags.join(', '))}"></div>
     <div style="display:flex;gap:14px;flex-wrap:wrap;">
       <div class="form-row" style="flex:2;min-width:240px;">
         <label>From a cookbook?</label>
@@ -1876,6 +2260,9 @@ function stashEditForm(){
   const g=id=>document.getElementById(id);
   if(g('f_title')) e.title=g('f_title').value;
   if(g('f_servings')) e.baseServings=parseFloat(g('f_servings').value)||1;
+  const mins=el=>{ const n=parseInt(el.value,10); return Number.isFinite(n)&&n>0?n:0; };
+  if(g('f_prep')) e.prepMinutes=mins(g('f_prep'));
+  if(g('f_cook')) e.cookMinutes=mins(g('f_cook'));
   if(g('f_emoji')) e.emoji=g('f_emoji').value||'🍽️';
   if(g('f_cooked')){
     const n=parseInt(g('f_cooked').value,10);
@@ -1995,6 +2382,8 @@ async function commitEdit(){
     notes:e.notes||'',
     cookbookId:e.cookbookId||null,
     cookbookPage:e.cookbookPage||'',
+    prepMinutes:e.prepMinutes||0,
+    cookMinutes:e.cookMinutes||0,
     timesCooked:e.timesCooked||0,
     ingredients:e.ingredients.filter(i=>String(i.name||'').trim())
       .map(i=>({qtyRaw:i.qtyRaw!=null?String(i.qtyRaw):String(i.qty||''), unit:i.unit||'', name:i.name})),
@@ -2015,37 +2404,152 @@ async function commitEdit(){
   }catch(err){ apiError(err); }
 }
 
-/* ============ SUBSTITUTIONS LIBRARY ============ */
-function viewSubstitutions(){
-  const q=state.subSearch.trim().toLowerCase();
-  const list=globalSubs.filter(s=>!q || s.ingredient.toLowerCase().includes(q) || s.substitute.toLowerCase().includes(q) || (s.notes||'').toLowerCase().includes(q));
-  return `
-    <h1 class="title">Substitutions Library</h1>
-    <p class="subtle">Entries here are auto-matched to any recipe using that ingredient — no manual linking needed.</p>
-    <div class="controls">
-      <div class="search-wrap"><span class="sicon">🔍</span>
-        <input id="subSearch" type="text" placeholder="Search substitutions by ingredient, substitute, or note..." value="${escA(state.subSearch)}" oninput="onSubSearch(this)"></div>
-      <span class="subtle" style="margin:0;">${list.length} of ${globalSubs.length}</span>
+/* ============ SUBSTITUTIONS LIBRARY ============
+ * Three substitutes for butter are one question with three answers, not three
+ * unrelated rows — so entries are grouped by the ingredient they replace.
+ * Recipe-only entries appear here too. They were previously invisible on this
+ * page: saved, matched, working, and unreachable except by remembering which
+ * recipe you added them from.
+ */
+function allSubEntries(){
+  const out = globalSubs.map(s => ({ ...s, scope:'library', recipe:null }));
+  recipes.forEach(r => (r.localSubs||[]).forEach(s =>
+    out.push({ ...s, scope:'recipe', recipe:r })));
+  return out;
+}
+function subGroups(){
+  const map = new Map();
+  allSubEntries().forEach(e => {
+    const key = normIng(e.ingredient);
+    if(!key) return;
+    if(!map.has(key)) map.set(key, { key, name: titleCase(e.ingredient), entries: [] });
+    map.get(key).entries.push(e);
+  });
+  const groups = [...map.values()];
+  groups.forEach(g => {
+    g.recipes = recipes.filter(r => r.ingredients.some(i => subMatches(g.name, i.name)));
+    g.localCount = g.entries.filter(e => e.scope === 'recipe').length;
+  });
+  // what you can actually use comes first; the rest is still there, just later
+  return groups.sort((a,b) => b.recipes.length - a.recipes.length || a.name.localeCompare(b.name));
+}
+const SUB_SCOPES = [
+  { key:'all',     label:'All' },
+  { key:'library', label:'Library' },
+  { key:'recipe',  label:'Recipe-only' },
+  { key:'unused',  label:'Unused' },
+];
+function setSubScope(k){ state.subScope=k; renderMain(); }
+function toggleSubGroup(k){ state.expandedSubGroups[k]=!state.expandedSubGroups[k]; renderMain(); }
+function onSubSearch(el){ focusId='subSearch'; focusPos=el.selectionStart; state.subSearch=el.value; renderMain(); }
+
+function visibleSubGroups(){
+  const q = state.subSearch.trim().toLowerCase();
+  const scope = state.subScope || 'all';
+  return subGroups().map(g => {
+    let entries = g.entries;
+    if(scope === 'library') entries = entries.filter(e => e.scope === 'library');
+    if(scope === 'recipe')  entries = entries.filter(e => e.scope === 'recipe');
+    if(q) entries = entries.filter(e =>
+      e.ingredient.toLowerCase().includes(q) ||
+      e.substitute.toLowerCase().includes(q) ||
+      (e.notes||'').toLowerCase().includes(q) ||
+      g.recipes.some(r => r.title.toLowerCase().includes(q)));
+    return { ...g, entries };
+  }).filter(g => g.entries.length && (state.subScope !== 'unused' || g.recipes.length === 0));
+}
+async function promoteSub(id){
+  try{
+    await apiJSON('/api/substitutions/'+id+'/promote','POST');
+    render(); toast('Moved into your library — it now applies to every recipe using that ingredient.');
+  }catch(e){ apiError(e); }
+}
+function openSubRecipe(id){ openRecipe(id); }
+
+function renderSubGroup(g){
+  const open = !!state.expandedSubGroups[g.key];
+  const n = g.recipes.length;
+  const onlyLocal = g.entries.every(e => e.scope === 'recipe');
+  const applies = n === 0
+    ? `No recipe uses ${g.name.toLowerCase()} yet`
+    : `${open ? '▾' : '▸'} Applies to ${n} recipe${n===1?'':'s'}`;
+  return `<div class="ing-group${onlyLocal?' local':''}${n===0?' idle':''}">
+    <div class="ig-head">
+      <span class="ig-name">${esc(g.name)}</span>
+      ${onlyLocal?`<span class="scope-tag scope-recipe">this recipe only</span>`:''}
+      <span class="ig-count">${g.entries.length} option${g.entries.length===1?'':'s'}${
+        n?` · ${n} recipe${n===1?'':'s'}`:''}</span>
     </div>
-    <div class="panel" style="max-width:660px;margin-bottom:22px;">
+    ${g.entries.map(e => `<div class="ig-opt">
+      <span class="ig-arrow">→</span>
+      <div style="min-width:0;flex:1;">
+        <div class="ig-sub">${esc(e.substitute)}${
+          e.scope==='recipe' && !onlyLocal
+            ? `<span class="scope-tag scope-recipe">only on ${esc(e.recipe?e.recipe.title:'a recipe')}</span>` : ''}</div>
+        ${e.notes?`<div class="ig-note">${esc(e.notes)}</div>`:''}
+        ${e.scope==='recipe'&&e.recipe?`<div class="ig-note">added while cooking
+          <button class="feed-link" style="font-size:11.5px;"
+            onclick="openSubRecipe('${e.recipe.id}')">${esc(e.recipe.title)}</button></div>`:''}
+      </div>
+      ${e.scope==='recipe'
+        ? `<button class="promote" title="Make this apply to every recipe using ${escA(g.name)}"
+             onclick="promoteSub('${e.id}')">↑ Promote to library</button>`
+        : ''}
+      <button class="ig-x" title="Remove" onclick="removeGlobalSub('${e.id}')">×</button>
+    </div>`).join('')}
+    <div class="ig-foot">
+      <button class="applies"${n?` onclick="toggleSubGroup('${jsq(g.key)}')"`:''}>${applies}</button>
+      ${open&&n?`<div class="rchips">${g.recipes.map(r=>`
+        <button class="rchip" onclick="openSubRecipe('${r.id}')"><i>${r.emoji}</i>${esc(r.title)}</button>`).join('')}</div>`:''}
+    </div>
+  </div>`;
+}
+
+function viewSubstitutions(){
+  const groups = visibleSubGroups();
+  const all = subGroups();
+  const totalEntries = allSubEntries().length;
+  const localTotal = all.reduce((t,g)=>t+g.localCount, 0);
+  const unusedTotal = all.filter(g=>g.recipes.length===0).length;
+  const counts = { all: totalEntries, library: globalSubs.length,
+                   recipe: localTotal, unused: unusedTotal };
+  return `
+    <div class="sec-head" style="border:none;padding:0;margin-bottom:4px;">
+      <h1 class="title">Substitutions</h1>
+      <button class="icon-btn primary no-print"
+        onclick="state.showSubAddForm=!state.showSubAddForm; renderMain();">
+        ${state.showSubAddForm?'✕ Close':'+ Add substitution'}</button>
+    </div>
+    <p class="subtle">${totalEntries} entr${totalEntries===1?'y':'ies'} across ${all.length}
+      ingredient${all.length===1?'':'s'}${localTotal?` · ${localTotal} tied to a single recipe`:''}.
+      Every one is matched to any recipe using that ingredient automatically.</p>
+
+    ${state.showSubAddForm?`
+    <div class="panel no-print" style="max-width:660px;margin-bottom:22px;">
       <div class="form-row"><label>Ingredient</label><input type="text" id="sub_ing" placeholder="e.g. buttermilk"></div>
       <div class="form-row"><label>Substitute</label><input type="text" id="sub_replace" placeholder="e.g. milk + lemon juice"></div>
       <div class="form-row" style="margin-bottom:8px;"><label>Notes (optional)</label><input type="text" id="sub_notes" placeholder="e.g. let sit 5 minutes"></div>
       <button class="icon-btn primary" onclick="addGlobalSub()">+ Add Substitution</button>
+    </div>`:''}
+
+    <div class="controls">
+      <div class="search-wrap"><span class="sicon">🔍</span>
+        <input id="subSearch" type="text" placeholder="Search by ingredient, substitute, note, or recipe..."
+          value="${escA(state.subSearch)}" oninput="onSubSearch(this)"></div>
+      <div class="scope-chips no-print">
+        ${SUB_SCOPES.map(sc=>`<button class="schip ${((state.subScope||'all')===sc.key)?'on':''}"
+          onclick="setSubScope('${sc.key}')">${sc.label} ${counts[sc.key]}</button>`).join('')}
+      </div>
     </div>
-    <div style="max-width:660px;">
-      ${list.length===0?`<div class="empty">No substitutions match "${esc(state.subSearch)}".</div>`:
-      list.map(s=>{
-        const used=recipes.filter(r=>r.ingredients.some(i=>subMatches(s.ingredient,i.name))).length;
-        return `<div class="sub-card">
-          <div><b>${esc(s.ingredient)}</b> → ${esc(s.substitute)}
-            ${s.notes?`<div class="note">${esc(s.notes)}</div>`:''}
-            <div class="note">${used?`auto-applies to ${used} recipe${used!==1?'s':''}`:'not used in any current recipe'}</div></div>
-          <button class="small-x" onclick="removeGlobalSub('${s.id}')">×</button></div>`;
-      }).join('')}
-    </div>`;
+
+    ${groups.length===0
+      ? `<div class="empty">${totalEntries===0
+          ? 'Nothing here yet. Add a substitution and it will apply to every recipe using that ingredient.'
+          : state.subSearch.trim()
+            ? `Nothing matches "${esc(state.subSearch)}".`
+            : 'Nothing in this filter.'}</div>`
+      : `<div class="sub-grid">${groups.map(renderSubGroup).join('')}</div>`}`;
 }
-function onSubSearch(el){ focusId='subSearch'; focusPos=el.selectionStart; state.subSearch=el.value; renderMain(); }
 function addGlobalSub(){
   const ing=titleCase(document.getElementById('sub_ing').value);
   const rep=document.getElementById('sub_replace').value.trim();
@@ -2054,6 +2558,7 @@ function addGlobalSub(){
   const similar=subsForName(ing);
   const doAdd=async()=>{
     try{ await apiJSON('/api/substitutions','POST',{ingredient:ing,substitute:rep,notes});
+      state.showSubAddForm=false;
       render(); toast('Substitution added.'); }catch(e){ apiError(e); }
   };
   if(similar.length){
@@ -2066,6 +2571,7 @@ function addGlobalSub(){
         {label:'Cancel'},
         {label:'Replace existing', action:async()=>{
           try{ await apiJSON('/api/substitutions/'+similar[0].id,'PUT',{ingredient:ing,substitute:rep,notes});
+            state.showSubAddForm=false;
             render(); toast('Replaced existing entry.'); }catch(e){ apiError(e); }
         }},
         {label:'Add as another option', style:'primary', action:doAdd}

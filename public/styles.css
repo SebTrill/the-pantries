@@ -602,6 +602,149 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
 .boot-error h1{font-family:var(--display);font-size:24px;margin:0 0 12px;color:var(--paper)}
 .boot-error p{color:var(--dim);font-size:15px;line-height:1.6;margin:0 0 18px;word-break:break-word}
 
+/* ---------- substitutions library: grouped by ingredient ---------- */
+/* Multi-column rather than a grid, so two uneven stacks of cards balance
+   themselves instead of leaving one column stranded. */
+.sub-grid{column-count:2;column-gap:16px}
+@media (max-width:900px){.sub-grid{column-count:1}}
+.ing-group{background:var(--panel);border:1px solid var(--rule);border-left:3px solid var(--olive);
+  border-radius:var(--radius);overflow:hidden;margin:0 0 16px;break-inside:avoid;
+  -webkit-column-break-inside:avoid;page-break-inside:avoid}
+.ing-group.local{border-left-color:var(--brick)}
+.ing-group.idle{opacity:.62}
+.ing-group.idle:hover{opacity:1}
+.ig-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;
+  padding:14px 17px 11px;border-bottom:1px dashed var(--rule)}
+.ig-name{font-family:var(--display);font-size:17px;color:var(--paper);letter-spacing:-.01em}
+.ig-count{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);margin-left:auto;white-space:nowrap}
+.ig-opt{display:flex;align-items:flex-start;gap:10px;padding:11px 17px;
+  border-bottom:1px dashed var(--rule-soft)}
+.ig-opt:last-of-type{border-bottom:none}
+.ig-arrow{font-family:var(--mono);color:var(--brick-lit);font-size:14px;line-height:1.5;flex-shrink:0}
+.ig-sub{font-size:15.5px;color:var(--cream);line-height:1.45}
+.ig-note{color:var(--dim);font-size:13px;margin-top:3px;font-style:italic}
+.ig-x{background:none;border:none;color:var(--faint);font-size:18px;line-height:1;cursor:pointer;
+  padding:0 2px;flex-shrink:0}
+.ig-x:hover{color:var(--danger)}
+.ig-foot{padding:10px 17px 13px;background:rgba(24,18,9,.4);border-top:1px solid var(--rule-soft)}
+.applies{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);background:none;border:none;padding:0;text-align:left}
+button.applies[onclick]{cursor:pointer}
+button.applies[onclick]:hover{color:var(--ochre)}
+.rchips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.rchip{display:inline-flex;align-items:center;gap:6px;background:var(--raise);border:1px solid var(--rule);
+  border-radius:20px;padding:4px 11px 4px 5px;font-size:12.5px;color:var(--paper);cursor:pointer;
+  font-family:var(--body)}
+.rchip:hover{border-color:var(--ochre);color:var(--ochre)}
+.rchip i{width:20px;height:20px;border-radius:50%;background:var(--panel2);display:flex;
+  align-items:center;justify-content:center;font-size:11px;font-style:normal;flex-shrink:0}
+.promote{background:none;border:1px solid var(--swap-line);color:var(--ochre);border-radius:var(--radius);
+  padding:3px 10px;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  cursor:pointer;white-space:nowrap;flex-shrink:0}
+.promote:hover{background:var(--swap)}
+.scope-chips{display:flex;gap:7px;flex-wrap:wrap}
+.schip{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  padding:7px 13px;border-radius:20px;border:1px solid var(--rule);color:var(--dim);
+  background:var(--panel);cursor:pointer;white-space:nowrap}
+.schip:hover{border-color:var(--ochre-dim);color:var(--paper)}
+.schip.on{background:var(--ochre);border-color:var(--ochre);color:#221A11}
+
+/* ---------- recipe page: two columns, tabbed right ---------- */
+.cook-cols{display:grid;grid-template-columns:380px minmax(0,1fr);gap:32px;align-items:start;
+  margin-bottom:8px}
+@media (max-width:900px){.cook-cols{grid-template-columns:1fr;gap:24px}}
+.col-head{font-family:var(--display);font-size:13px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ochre);margin:0 0 12px;padding:0 0 9px;border-bottom:2px solid var(--rule);
+  display:flex;justify-content:space-between;align-items:baseline;gap:10px;line-height:1.15}
+.col-head span{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--faint);
+  white-space:nowrap}
+/* the tab strip stands in for the right column's heading, so it sits on the same rule */
+.col-tabs{display:flex;align-items:baseline;margin:0 0 12px;padding:0;border-bottom:2px solid var(--rule)}
+.col-tabs .tab{background:none;border:none;cursor:pointer;font-family:var(--display);font-size:13px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--faint);padding:0 0 9px;margin:0 26px 0 0;
+  border-bottom:2.5px solid transparent;margin-bottom:-2px;line-height:1.15;transition:color .14s}
+.col-tabs .tab:hover{color:var(--dim)}
+.col-tabs .tab.active{color:var(--ochre);border-color:var(--brick)}
+.col-tabs .meta{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
+  color:var(--faint);padding-bottom:9px;white-space:nowrap}
+.tab-panel.is-hidden{display:none}
+.ing-list.compact li{font-size:15.5px;padding:8px 6px}
+.ing-list.compact li span.qty{font-size:14.5px;margin-right:8px}
+.sub-count{display:inline-block;min-width:16px;height:16px;border-radius:20px;background:var(--sage-soft);
+  border:1px solid rgba(126,138,87,.45);color:var(--olive);font-family:var(--mono);font-size:9px;
+  text-align:center;line-height:14px;margin-left:6px;padding:0 3px;vertical-align:1px}
+
+/* ---------- facts strip ---------- */
+.facts-row{display:flex;flex-wrap:wrap;background:var(--panel);border:1px solid var(--rule);
+  border-radius:var(--radius);margin:16px 0 18px;overflow:hidden}
+.facts-row .fact{padding:12px 20px;border-right:1px solid var(--rule);flex:1;min-width:120px}
+.facts-row .fact:last-child{border-right:none}
+.facts-row .fl{font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--faint)}
+.facts-row .fv{font-family:var(--display);font-size:19px;color:var(--paper);margin-top:5px;line-height:1.1}
+.facts-row .fv small{font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.08em}
+.histbar{display:flex;align-items:flex-end;gap:3px;height:20px;margin-top:7px}
+.histbar i{flex:1;background:var(--raise);border-radius:1px;min-height:3px;display:block}
+.histbar i.hi{background:var(--ochre)}
+
+/* ---------- notes, above the recipe and edited in place ---------- */
+.notes-band{position:relative;margin-bottom:20px}
+.nlabel{font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;
+  color:var(--olive);margin-bottom:7px;display:block}
+.notes-band .notes-body{padding-right:92px}
+.notes-empty{color:var(--dim);font-style:italic;font-size:15px;border-left:3px solid var(--rule);
+  padding:10px 0 10px 16px}
+.notes-band .edit-inline{position:absolute;top:22px;right:11px;background:rgba(24,18,9,.75);
+  border:1px solid var(--rule);color:var(--dim);border-radius:var(--radius);padding:4px 10px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;cursor:pointer}
+.notes-band .edit-inline:hover{border-color:var(--ochre);color:var(--ochre)}
+.notes-band.editing textarea{width:100%;padding:12px 14px;border-radius:var(--radius);
+  border:1px solid var(--ochre);background:var(--panel);color:var(--cream);font-family:var(--body);
+  font-size:15.5px;line-height:1.7}
+.notes-band.editing textarea:focus{outline:none;box-shadow:0 0 0 3px rgba(217,164,65,.14)}
+.note-btns{display:flex;gap:8px;margin-top:9px}
+
+/* ---------- ingredient mentions inside the steps ---------- */
+/* Plain until you hover: a mention is clickable but shouldn't shout about it. */
+.ingword{background:none;border:none;padding:0;font:inherit;color:inherit;cursor:pointer;
+  border-bottom:1px solid transparent}
+.ingword:hover{border-bottom-color:var(--ochre-dim);color:var(--ochre)}
+.ingword.strong{color:var(--paper);font-weight:600}
+.ingword.strong:hover{color:var(--ochre)}
+/* A word the app changed is always marked — the steps must never quietly stop
+   matching the book they were copied from. */
+.swapword{background:var(--swap);border:none;border-bottom:1.5px solid var(--swap-line);
+  color:var(--ochre);padding:1px 4px;border-radius:2px;font:inherit;cursor:pointer}
+.swapword:hover{background:rgba(217,164,65,.22)}
+.swap-banner{display:flex;align-items:center;gap:10px;background:var(--swap);
+  border:1px solid var(--swap-line);border-radius:var(--radius);padding:9px 14px;margin-bottom:14px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ochre)}
+.swap-banner button{margin-left:auto;background:none;border:1px solid var(--swap-line);
+  color:var(--ochre);border-radius:var(--radius);padding:3px 10px;font-family:var(--mono);
+  font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
+.swap-banner button:hover{background:rgba(217,164,65,.18)}
+.mention-pop{position:absolute;z-index:120;background:var(--panel2);border:1px solid var(--rule);
+  border-top:2px solid var(--ochre);border-radius:var(--radius);padding:10px;min-width:210px;
+  box-shadow:0 14px 34px rgba(0,0,0,.6)}
+.mention-pop .mp-orig{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+.mention-pop .mp-orig b{color:var(--paper);font-weight:400}
+.mention-pop .mp-act{display:block;width:100%;text-align:left;background:none;border:none;
+  color:var(--paper);font-family:var(--body);font-size:14px;padding:6px 8px;border-radius:var(--radius);
+  cursor:pointer}
+.mention-pop .mp-act:hover{background:var(--raise);color:var(--ochre)}
+.quoted{background:var(--ground);border-left:3px solid var(--ochre);border-radius:var(--radius);
+  padding:11px 15px;font-size:15px;line-height:1.6;color:var(--paper)}
+.amb-row{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px dashed var(--rule);
+  font-size:14.5px;line-height:1.55;cursor:pointer}
+.amb-row:first-of-type{border-top:none}
+.amb-row input{width:17px;height:17px;margin-top:3px;flex-shrink:0;accent-color:var(--ochre)}
+.amb-step{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ochre);margin-right:9px}
+.rate-fold{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--rule);
+  border-radius:var(--radius);padding:13px 17px;margin-bottom:16px;flex-wrap:wrap}
+
 /* ---------- print: ink on paper, not screen on night ---------- */
 @media print{
   .topbar,.controls,.no-print,.tabs,.dashed-add,.app-foot{display:none !important}
@@ -613,4 +756,16 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
   .ing-list li span.qty,.steps li::before,.stars,.sec-head h2{color:#333 !important}
   .ing-list li,.steps li{border-color:#ddd !important}
   .print-only{display:inline !important}
+  /* A hidden tab panel is in the DOM precisely so printing can bring it back.
+     The :not() keeps this from also un-hiding the substitutions panel, which
+     carries no-print and stays off the page. */
+  .tab-panel.is-hidden:not(.no-print){display:block !important}
+  .cook-cols{display:block !important}
+  .col-head{border-color:#bbb !important;color:#111 !important;margin-top:22px}
+  .facts-row{border-color:#bbb !important}
+  .facts-row .fact{border-color:#bbb !important}
+  .facts-row .fv,.notes-band .notes-body{color:#111 !important}
+  .swapword{background:none !important;color:#111 !important;border-bottom:1px solid #888 !important}
+  .ingword{color:inherit !important;border:none !important}
+  .histbar{display:none !important}
 }
