@@ -23,6 +23,7 @@ let activity = [];
 let globalSubs = [];
 let allCategories = [];
 let shoppingList = [];
+let emojiPalette = { recipe:[], cookbook:[] };
 let scanEnabled = false;
 let userEmail = null;
 
@@ -53,6 +54,7 @@ function applyState(st){
   if (st.globalSubs) globalSubs = st.globalSubs;
   if (st.allCategories) allCategories = st.allCategories;
   if (st.shoppingList) shoppingList = st.shoppingList;
+  if (st.emojiPalette) emojiPalette = st.emojiPalette;
   lastSig = storeSig();
 }
 
@@ -74,7 +76,7 @@ const storeSig = () => sigOf({recipes, cookbooks, globalSubs, allCategories, sho
  *  throw away whatever is being typed. */
 function safeToRefresh(){
   if (['editRecipe','editCookbook','scanning'].includes(state.view)) return false;
-  if (modalCfg || focalDraft || state.notesDraft) return false;
+  if (modalCfg || focalDraft || pasteDraft || state.notesDraft) return false;
   if (busyDepth > 0) return false;
   return true;
 }
@@ -156,6 +158,7 @@ let state = {
   subScope:'all',        // library page filter: all / library / recipe-only / unused
   expandedSubGroups:{},  // which ingredient groups have their recipe list open
   showSubAddForm:false,
+  emojiOpen:null,        // which emoji palette has its "more" panel open
   recipeSubSearch:'',    // filter inside a recipe's substitutions tab
   notesDraft:null,       // {id,text} while notes are being edited in place
   showRateForm:false,
@@ -410,19 +413,19 @@ function applyUrl(){
   if(path === '/recipe/edit'){
     const r = id && recipes.find(x=>x.id===id);
     if(r){ state.editing=JSON.parse(JSON.stringify(r)); state.scanSource=null; state.scanImage=null;
-           state.view='editRecipe'; return; }
+           state.view='editRecipe'; markEditBaseline(); return; }
     state.view='browse'; return;                       // stale link to a deleted recipe
   }
   if(path === '/add-recipe'){
     // arriving here directly means you already chose to type one in
     if(!state.editing || state.editing.id) state.editing = blankRecipeDraft();
-    state.scanSource=null; state.scanImage=null; state.view='editRecipe'; return;
+    state.scanSource=null; state.scanImage=null; state.view='editRecipe'; markEditBaseline(); return;
   }
   if(path === '/cookbook' && id){ state.view='cookbookDetail'; state.currentBookId=id; return; }
   if(path === '/cookbook/edit'){
     const b = id && cookbooks.find(x=>x.id===id);
     state.editingBook = b ? JSON.parse(JSON.stringify(b)) : blankBookDraft();
-    state.view='editCookbook'; return;
+    state.view='editCookbook'; markEditBaseline(); return;
   }
   const simple = {
     '/':'home', '/home':'home', '/index.html':'home',
@@ -435,6 +438,13 @@ function applyUrl(){
 /* Back/forward can't pop a confirmation dialog without fighting the history
    stack, so temporary substitutions are simply reverted and called out. */
 window.addEventListener('popstate', ()=>{
+  // the address has already changed by now, so staying means pushing it back
+  if(inEditForm() && isEditDirty()){
+    const stayUrl = urlForState();
+    guardEdit(()=>{ applyUrl(); render(); },
+              ()=>{ try{ history.pushState({}, '', stayUrl); }catch(e){} });
+    return;
+  }
   const rid = state.currentRecipeId;
   const hadSubs = state.view==='detail' && rid && appliedCount(rid)>0;
   if(hadSubs) delete state.appliedSubs[rid];
@@ -446,6 +456,7 @@ window.addEventListener('popstate', ()=>{
 /* ============ NAV (with unsaved-substitution guard) ============ */
 function appliedCount(recipeId){ return Object.keys(state.appliedSubs[recipeId]||{}).length; }
 function attemptNav(fn){
+  if(inEditForm()){ guardEdit(fn); return; }      // unsaved recipe or cookbook draft
   const rid = state.currentRecipeId;
   if(state.view==='detail' && rid && appliedCount(rid)>0){
     const n=appliedCount(rid);
@@ -461,6 +472,12 @@ function attemptNav(fn){
 }
 function goto(view){ attemptNav(()=>{ state.view=view; state.detailTab='instructions'; state.showRecipeSubForm=false; render(); }); }
 function openRecipe(id){
+  // must test dirtiness, not merely "am I in a form" — otherwise the retry
+  // lands right back here and recurses forever
+  if(inEditForm() && isEditDirty()){
+    guardEdit(()=>{ clearEditDraft(); openRecipe(id); });
+    return;
+  }
   state.view='detail'; state.currentRecipeId=id; state.detailTab='instructions';
   state.showRecipeSubForm=false; state.starDraft=0; state.recipeSubSearch='';
   state.showRateForm=false; state.notesDraft=null;
@@ -1154,65 +1171,131 @@ function viewCookbookDetail(){
 function startAddCookbook(){
   attemptNav(()=>{
     state.editingBook=blankBookDraft();
-    state.view='editCookbook'; render();
+    state.view='editCookbook'; markEditBaseline(); render();
   });
 }
 function startEditCookbook(id){
   attemptNav(()=>{
     state.editingBook=JSON.parse(JSON.stringify(cookbooks.find(b=>b.id===id)));
-    state.view='editCookbook'; render();
+    state.view='editCookbook'; markEditBaseline(); render();
   });
+}
+function stashBookForm(){
+  const b=state.editingBook;
+  if(!b) return;
+  const g=id=>document.getElementById(id);
+  if(g('b_title')) b.title=g('b_title').value;
+  if(g('b_author')) b.author=g('b_author').value;
+  if(g('b_publisher')) b.publisher=g('b_publisher').value;
+  if(g('b_published')) b.published=g('b_published').value;
+  if(g('b_edition')) b.edition=g('b_edition').value;
+  if(g('b_isbn')) b.isbn=g('b_isbn').value;
+  if(g('b_notes')) b.notes=g('b_notes').value;
+  if(g('b_emoji')) b.emoji=g('b_emoji').value;
 }
 function viewEditCookbook(){
   const b=state.editingBook, isNew=!b.id;
+  const cover=bookCover(b);
+  const linked=isNew?[]:recipesInBook(b.id);
+  const files=(b.files||[]).length, photos=(b.images||[]).length;
   return `
-    <button class="back" onclick="cancelBookEdit()">← Cancel</button>
-    <h1 class="title">${isNew?'Add a Cookbook':'Edit Cookbook'}</h1>
-    <p class="subtle">Only the title is required — fill in whatever else you know.</p>
-    <div style="max-width:640px;">
-      <div class="form-row"><label>Title</label>
-        <input type="text" id="b_title" value="${escA(b.title)}" placeholder="The Joy of Cooking"></div>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;">
-        <div class="form-row" style="flex:2;min-width:220px;"><label>Author</label>
-          <input type="text" id="b_author" value="${escA(b.author)}" placeholder="Irma S. Rombauer"></div>
-        <div class="form-row" style="flex:1;min-width:110px;"><label>Cover emoji</label>
-          <input type="text" id="b_emoji" value="${escA(b.emoji)}"></div>
+    ${editBar(isNew?'Add a Cookbook':'Edit Cookbook','Save Cookbook','saveCookbook()','cancelBookEdit()')}
+    <div class="book-cols">
+      <div class="cover-box">
+        <div class="cover-shot">${cover
+          ? `<img src="${cover.url}" alt="${escA(b.title)}" style="${focalStyle(cover)}">`
+          : `<span class="cover-emoji">${b.emoji||'📕'}</span>`}</div>
+        ${isNew
+          ? `<div class="subtle" style="font-size:12px;margin-top:11px;line-height:1.55;">
+              Save the book first and you can add photos and scanned files to it.</div>`
+          : `<div class="cover-btns">
+              <label class="icon-btn" style="text-align:center;cursor:pointer;">
+                📁 ${cover?'Change cover':'Add a photo'}
+                <input type="file" accept="image/*" style="display:none"
+                  onchange="handleBookUpload(event,'${b.id}')">
+              </label>
+              ${cover?`<button class="icon-btn" onclick="openFocalEditor('book','${cover.id}')">⤧ Reposition</button>`:''}
+            </div>
+            <div class="subtle" style="font-size:12px;margin-top:12px;line-height:1.55;">
+              ${photos} photo${photos===1?'':'s'} · ${files} scanned file${files===1?'':'s'}.
+              <button class="linkish" onclick="openCookbook('${b.id}')">Manage on the book page →</button></div>`}
       </div>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;">
-        <div class="form-row" style="flex:2;min-width:200px;"><label>Publisher</label>
-          <input type="text" id="b_publisher" value="${escA(b.publisher)}" placeholder="Scribner"></div>
-        <div class="form-row" style="flex:1;min-width:130px;"><label>Published</label>
-          <input type="text" id="b_published" value="${escA(b.published)}" placeholder="1997"></div>
+
+      <div>
+        <div class="fsec">
+          <h2>The book <span class="hint">only the title is required</span></h2>
+          <div class="fsec-body">
+            <div class="form-row"><label>Title</label>
+              <input type="text" id="b_title" value="${escA(b.title)}" placeholder="The Joy of Cooking"
+                oninput="stashBookForm()"></div>
+            <div class="fgrid" style="grid-template-columns:1fr 130px;">
+              <div class="form-row" style="margin:0;"><label>Author</label>
+                <input type="text" id="b_author" value="${escA(b.author)}" placeholder="Irma S. Rombauer"
+                  oninput="stashBookForm()"></div>
+              <div class="form-row" style="margin:0;"><label>Cover emoji</label>
+                <input type="text" id="b_emoji" value="${escA(b.emoji)}" style="text-align:center;"
+                  oninput="stashBookForm()"></div>
+            </div>
+            ${renderEmojiPicker('cookbook', b.emoji, 'b_emoji')}
+            <div class="fgrid" style="grid-template-columns:1fr 1fr;margin-top:20px;">
+              <div class="form-row" style="margin:0;"><label>Publisher</label>
+                <input type="text" id="b_publisher" value="${escA(b.publisher)}" placeholder="Scribner"
+                  oninput="stashBookForm()"></div>
+              <div class="form-row" style="margin:0;"><label>Published</label>
+                <input type="text" id="b_published" value="${escA(b.published)}" placeholder="1997"
+                  oninput="stashBookForm()"></div>
+              <div class="form-row" style="margin:0;"><label>Edition</label>
+                <input type="text" id="b_edition" value="${escA(b.edition)}" placeholder="75th Anniversary"
+                  oninput="stashBookForm()"></div>
+              <div class="form-row" style="margin:0;"><label>ISBN</label>
+                <input type="text" id="b_isbn" value="${escA(b.isbn)}" placeholder="978-0-7432-4626-2"
+                  oninput="stashBookForm()"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="fsec">
+          <h2>Notes</h2>
+          <div class="fsec-body">
+            <textarea id="b_notes" rows="4" oninput="stashBookForm()"
+              placeholder="Where it came from, who gave it to you, which sections are worth cooking from..."
+              style="width:100%;padding:11px 13px;border-radius:3px;border:1px solid var(--rule);font-size:15px;background:var(--panel);color:var(--cream);font-family:var(--body);">${esc(b.notes)}</textarea>
+          </div>
+        </div>
+
+        ${isNew?'':`
+        <div class="fsec" style="margin-bottom:0;">
+          <h2>Record</h2>
+          <div class="fsec-body">
+            <div class="record-strip">
+              <div class="record-note" style="max-width:none;">
+                <b style="color:var(--paper);font-style:normal;">${linked.length} recipe${linked.length===1?'':'s'}</b>
+                linked to this book. Deleting it won't delete them — they just stop showing a source.</div>
+              <div class="danger-side">
+                <button class="icon-btn danger" onclick="confirmDeleteCookbook('${b.id}')">🗑 Delete this cookbook</button></div>
+            </div>
+          </div>
+        </div>`}
       </div>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;">
-        <div class="form-row" style="flex:1;min-width:130px;"><label>Edition</label>
-          <input type="text" id="b_edition" value="${escA(b.edition)}" placeholder="75th Anniversary"></div>
-        <div class="form-row" style="flex:2;min-width:200px;"><label>ISBN</label>
-          <input type="text" id="b_isbn" value="${escA(b.isbn)}" placeholder="978-0-7432-4626-2"></div>
-      </div>
-      <div class="form-row"><label>Notes</label>
-        <textarea id="b_notes" rows="4" placeholder="Where it came from, who gave it to you, which sections are worth cooking from..."
-          style="width:100%;padding:10px 12px;border-radius:3px;border:1px solid var(--rule);font-size:15px;background:var(--panel);color:var(--cream);font-family:var(--body);">${esc(b.notes)}</textarea></div>
-      <button class="icon-btn primary" onclick="saveCookbook()">💾 Save Cookbook</button>
-      ${isNew?`<div class="subtle" style="margin-top:10px;font-size:12.5px;">
-        You can add photos and scanned files once it's saved.</div>`:''}
     </div>`;
 }
-function cancelBookEdit(){ state.editingBook=null; state.view='cookbooks'; render(); }
+function cancelBookEdit(){
+  guardEdit(()=>{ clearEditDraft(); state.view='cookbooks'; render(); });
+}
 async function saveCookbook(){
-  const g=id=>document.getElementById(id).value;
+  stashBookForm();
   const b=state.editingBook;
   const payload={
-    title:g('b_title').trim(), author:g('b_author').trim(), publisher:g('b_publisher').trim(),
-    published:g('b_published').trim(), edition:g('b_edition').trim(), isbn:g('b_isbn').trim(),
-    notes:g('b_notes'), emoji:g('b_emoji').trim()||'📕',
+    title:(b.title||'').trim(), author:(b.author||'').trim(), publisher:(b.publisher||'').trim(),
+    published:(b.published||'').trim(), edition:(b.edition||'').trim(), isbn:(b.isbn||'').trim(),
+    notes:b.notes||'', emoji:(b.emoji||'').trim()||'📕',
   };
   if(!payload.title){ toast('A cookbook needs a title.'); return; }
   try{
     const res = b.id ? await apiJSON('/api/cookbooks/'+b.id,'PUT',payload)
                      : await apiJSON('/api/cookbooks','POST',payload);
     const id = b.id || res.id;
-    state.editingBook=null;
+    clearEditDraft();
     openCookbook(id);
     toast(b.id?'Cookbook updated.':'Cookbook added.');
   }catch(e){ apiError(e); }
@@ -1230,6 +1313,7 @@ function confirmDeleteCookbook(id){
       {label:'Remove cookbook', style:'danger', action:async()=>{
         try{
           await apiJSON('/api/cookbooks/'+id,'DELETE');
+          if(state.view==='editCookbook'){ clearEditDraft(); state.view='cookbooks'; }
           if(state.currentBookId===id){ state.currentBookId=null; state.view='cookbooks'; }
           render(); toast(`"${b.title}" removed.`);
         }catch(e){ apiError(e); }
@@ -1344,6 +1428,7 @@ function confirmDeleteRecipe(id){
         try{
           await apiJSON('/api/recipes/'+id,'DELETE');
           delete state.appliedSubs[id];
+          if(state.view==='editRecipe'){ clearEditDraft(); state.view='browse'; }
           if(state.currentRecipeId===id){ state.currentRecipeId=null; state.view='browse'; }
           render(); toast(`"${r.title}" removed.`);
         }catch(e){ apiError(e); }
@@ -1355,6 +1440,334 @@ function onSearch(el){
   focusId='searchInput'; focusPos=el.selectionStart;
   state.searchQuery=el.value;
   if(state.searchQuery.trim() && state.sortBy==='newest') state.sortBy='relevant';
+  renderMain();
+}
+
+/* ============ UNSAVED-WORK GUARD ============
+ * Every exit from an edit form used to discard the work in silence — the top
+ * bar, the browser's back button, the Cancel button, and reloading the tab.
+ * All four now ask first, and the question names what would be lost.
+ *
+ * Dirtiness is measured, not tracked: a snapshot is taken when the form opens
+ * and compared against the live draft. That way a change you typed and then
+ * undid doesn't count as unsaved work.
+ */
+let editBaseline = null;
+const inEditForm = () => ['editRecipe','editCookbook'].includes(state.view);
+
+function currentDraft(){
+  if(state.view==='editRecipe')   { stashEditForm(); return state.editing; }
+  if(state.view==='editCookbook') { stashBookForm(); return state.editingBook; }
+  return null;
+}
+function markEditBaseline(){
+  const d = state.view==='editRecipe' ? state.editing
+          : state.view==='editCookbook' ? state.editingBook : null;
+  editBaseline = d ? JSON.stringify(d) : null;
+}
+function isEditDirty(){
+  if(!inEditForm() || editBaseline==null) return false;
+  try{ return JSON.stringify(currentDraft()) !== editBaseline; }
+  catch(e){ return false; }
+}
+/** Plain-language list of what changed, so the warning is specific. */
+function describeEditChanges(){
+  let was, now;
+  try{ was=JSON.parse(editBaseline); now=currentDraft(); }catch(e){ return []; }
+  if(!was||!now) return [];
+  const out=[];
+  const same=(k)=>JSON.stringify(was[k])===JSON.stringify(now[k]);
+  const cmp=(k,label)=>{ if(!same(k)) out.push(label); };
+  if(state.view==='editRecipe'){
+    cmp('title','title'); cmp('emoji','emoji'); cmp('categories','categories');
+    cmp('tags','tags'); cmp('baseServings','servings');
+    cmp('prepMinutes','prep time'); cmp('cookMinutes','cook time');
+    cmp('cookbookId','cookbook'); cmp('cookbookPage','page');
+    cmp('notes','notes'); cmp('timesCooked','times cooked');
+    const countLabel=(a,b,word)=>{
+      const d=b.length-a.length;
+      return d>0 ? `${d} ${word}${d===1?'':'s'} added`
+           : d<0 ? `${-d} ${word}${d===-1?'':'s'} removed`
+           : `${word} edits`;
+    };
+    if(!same('ingredients')) out.push(countLabel(was.ingredients||[], now.ingredients||[], 'ingredient'));
+    if(!same('instructions')) out.push(countLabel(was.instructions||[], now.instructions||[], 'step'));
+  } else {
+    cmp('title','title'); cmp('author','author'); cmp('publisher','publisher');
+    cmp('published','published'); cmp('edition','edition'); cmp('isbn','ISBN');
+    cmp('notes','notes'); cmp('emoji','emoji');
+  }
+  return out;
+}
+function clearEditDraft(){
+  state.editing=null; state.editingBook=null;
+  state.scanSource=null; state.scanImage=null;
+  editBaseline=null;
+}
+/** Runs `leave` only once it's safe to lose the draft. `onStay` lets the caller
+ *  put things back — the browser's back button needs the URL restored. */
+function guardEdit(leave, onStay){
+  if(!isEditDirty()){ leave(); return; }
+  const d = currentDraft();
+  const name = (d && String(d.title||'').trim()) || 'this draft';
+  const what = describeEditChanges();
+  showModal({
+    title:'You have unsaved changes',
+    body:`<p style="margin:0 0 10px;">You've edited <b>${esc(name)}</b> but haven't saved.
+        Leaving this page will discard those changes.</p>
+      ${what.length?`<p style="margin:0;color:var(--dim);font-size:14px;">Changed: ${esc(what.join(', '))}.</p>`:''}`,
+    buttons:[
+      {label:'Discard & leave', action:()=>{ clearEditDraft(); leave(); }},
+      {label:'Keep editing', style:'primary', action:onStay||undefined},
+    ]
+  });
+}
+/* Closing the tab or reloading is the browser's to warn about, not ours. */
+window.addEventListener('beforeunload', (e)=>{
+  if(isEditDirty()){ e.preventDefault(); e.returnValue=''; }
+});
+
+/* ============ EMOJI PALETTE ============
+ * The default row covers most cooking, but the useful set is personal. Anything
+ * you add lives in the database rather than this browser, so the palette is the
+ * same on your phone. Ordering is by how many recipes actually use each one,
+ * counted server-side, so the ones you reach for drift to the front on their own.
+ */
+const EMOJI_VISIBLE = 12;
+function toggleEmojiMore(kind){
+  state.emojiOpen = state.emojiOpen===kind ? null : kind;
+  renderMain();
+  const el=document.getElementById('emojiNew_'+kind);
+  if(el) el.focus();
+}
+function paletteFor(kind, current){
+  const list=(emojiPalette[kind]||[]).slice();
+  const top=list.slice(0, EMOJI_VISIBLE);
+  // whatever you're using now belongs on the front row even if it's rare
+  if(current && !top.some(e=>e.emoji===current)){
+    const known=list.find(e=>e.emoji===current);
+    if(top.length>=EMOJI_VISIBLE) top.pop();
+    top.unshift(known||{emoji:current, uses:0, custom:true});
+  }
+  return { top, rest: list.filter(e=>!top.some(t=>t.emoji===e.emoji)) };
+}
+function renderEmojiPicker(kind, current, fieldId){
+  const {top, rest} = paletteFor(kind, current);
+  const open = state.emojiOpen===kind;
+  return `<div class="emoji-pick">
+    ${top.map(e=>`<button type="button" class="epick ${e.emoji===current?'on':''}"
+      title="${e.uses?`used by ${e.uses} ${kind==='cookbook'?'book':'recipe'}${e.uses===1?'':'s'}`:'not used yet'}"
+      onclick="pickEmoji('${kind}','${fieldId}','${jsq(e.emoji)}')">${e.emoji}</button>`).join('')}
+    <button type="button" class="epick more ${open?'on':''}" onclick="toggleEmojiMore('${kind}')"
+      title="Add your own${rest.length?` · ${rest.length} more in your palette`:''}"
+      >＋${rest.length?`<span class="ecount">${rest.length}</span>`:''}</button>
+  </div>
+  ${open?`<div class="emoji-panel">
+    ${rest.length?`<div class="ep-label">The rest of your palette</div>
+      <div class="emoji-pick">${rest.map(e=>`<span class="epwrap">
+        <button type="button" class="epick ${e.emoji===current?'on':''}"
+          title="${e.uses?`used by ${e.uses}`:'not used yet'}"
+          onclick="pickEmoji('${kind}','${fieldId}','${jsq(e.emoji)}')">${e.emoji}</button>
+        ${e.custom&&!e.uses?`<button type="button" class="epkill" title="Remove from palette"
+          onclick="removePaletteEmoji('${kind}','${jsq(e.emoji)}')">×</button>`:''}
+      </span>`).join('')}</div>`:''}
+    <div class="ep-label" style="margin-top:${rest.length?'14px':'0'};">Add one of your own</div>
+    <div class="ep-add">
+      <input type="text" id="emojiNew_${kind}" maxlength="8" placeholder="Paste or type an emoji"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();addPaletteEmoji('${kind}','${fieldId}');}">
+      <button type="button" class="icon-btn" onclick="addPaletteEmoji('${kind}','${fieldId}')">+ Add</button>
+    </div>
+    <div class="subtle" style="font-size:12px;margin:9px 0 0;">
+      Added emoji are kept with your account, so they show up on every device.</div>
+  </div>`:''}`;
+}
+function pickEmoji(kind, fieldId, emoji){
+  const el=document.getElementById(fieldId);
+  if(el) el.value=emoji;
+  if(kind==='cookbook'){ stashBookForm(); state.editingBook.emoji=emoji; }
+  else { stashEditForm(); state.editing.emoji=emoji; }
+  renderMain();
+}
+async function addPaletteEmoji(kind, fieldId){
+  const el=document.getElementById('emojiNew_'+kind);
+  const v=(el?el.value:'').trim();
+  if(!v){ toast('Paste an emoji first.'); return; }
+  if(/[a-z0-9]/i.test(v)){ toast('That looks like text, not an emoji.'); return; }
+  if(kind==='cookbook') stashBookForm(); else stashEditForm();
+  try{
+    await apiJSON('/api/emoji','POST',{kind, emoji:v});
+    pickEmoji(kind, fieldId, v);
+    toast(`${v} added to your palette.`);
+  }catch(e){ apiError(e); }
+}
+async function removePaletteEmoji(kind, emoji){
+  if(kind==='cookbook') stashBookForm(); else stashEditForm();
+  try{
+    await apiJSON('/api/emoji','DELETE',{kind, emoji});
+    renderMain(); toast('Removed from your palette.');
+  }catch(e){ apiError(e); }
+}
+
+/* ============ PASTING A LIST ============
+ * Typing fifteen ingredients into three boxes each is the slowest thing in the
+ * app. This points the existing quantity parser at a block of text and shows
+ * you what it read before anything is added, so a misread is visible rather
+ * than buried in the form.
+ */
+const COMMON_UNITS = ['cup','cups','tbsp','tbs','tablespoon','tablespoons','tsp','teaspoon','teaspoons',
+  'oz','ounce','ounces','lb','lbs','pound','pounds','g','gram','grams','kg','mg','ml','l','litre','litres',
+  'liter','liters','clove','cloves','pinch','pinches','dash','dashes','can','cans','jar','jars','stick',
+  'sticks','slice','slices','bunch','bunches','sprig','sprigs','head','heads','package','packages','pkg',
+  'quart','quarts','pint','pints','gallon','gallons','handful','handfuls','piece','pieces','sheet','sheets',
+  'stalk','stalks','fillet','fillets','strip','strips','cube','cubes','drop','drops','knob','knobs'];
+const UNI_FRAC_CLASS = '[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]';
+
+/** "1 1/2 cups all-purpose flour" -> {qtyRaw:"1 1/2", unit:"cups", name:"All-Purpose Flour"} */
+function parseIngredientLine(line){
+  let s=String(line||'').trim()
+    .replace(/^[-*•·–—]\s+/,'')          // bullets
+    .replace(/^\d{1,2}[.)]\s+/,'');      // list numbering, not a quantity
+  if(!s) return null;
+
+  let qtyRaw='';
+  const m=s.match(new RegExp('^((?:\\d+\\s+\\d+\\/\\d+)|(?:\\d+\\/\\d+)|(?:\\d+(?:\\.\\d+)?)|'+UNI_FRAC_CLASS+')\\s*'));
+  if(m){ qtyRaw=m[1].trim(); s=s.slice(m[0].length); }
+  // a unicode fraction can trail a whole number: "1 ½ cups"
+  const m2=s.match(new RegExp('^('+UNI_FRAC_CLASS+')\\s*'));
+  if(m2 && qtyRaw){ qtyRaw+=' '+m2[1]; s=s.slice(m2[0].length); }
+  // "a pinch of salt" — an article stands in for a quantity
+  if(!qtyRaw) s=s.replace(/^(a|an)\s+/i,'');
+
+  let unit='';
+  const w=s.match(/^([A-Za-z]+)\.?\s+/);
+  if(w && COMMON_UNITS.includes(w[1].toLowerCase())){ unit=w[1]; s=s.slice(w[0].length); }
+  s=s.replace(/^of\s+/i,'').trim();
+  if(!s) return null;
+  return { qtyRaw, unit, name: titleCase(s) };
+}
+function parseIngredientBlock(text){
+  return String(text||'').split(/\r?\n/).map(parseIngredientLine).filter(Boolean);
+}
+function parseStepBlock(text){
+  const raw=String(text||'').trim();
+  if(!raw) return [];
+  // one per line normally; a single run-on paragraph splits on its own numbering
+  const parts = /\r?\n/.test(raw) ? raw.split(/\r?\n+/) : raw.split(/(?=\b\d{1,2}[.)]\s)/);
+  return parts.map(s=>s.trim().replace(/^[-*•·–—]\s+/,'').replace(/^\d{1,2}[.)]\s*/,'').trim())
+    .filter(Boolean);
+}
+
+let pasteDraft=null;
+function openPaste(kind){ pasteDraft={kind, text:''}; renderPaste(); }
+function closePaste(){ pasteDraft=null; closeModal(); }
+function renderPaste(){
+  const d=pasteDraft;
+  if(!d){ closeModal(); return; }
+  const isIng = d.kind==='ingredients';
+  const root=document.getElementById('modalRoot');
+  root.className='show';
+  root.innerHTML=`<div class="modal" style="max-width:620px;">
+    <h3>${isIng?'Paste your ingredients':'Paste your steps'}</h3>
+    <div class="mbody">
+      <p style="margin:0 0 10px;">${isIng
+        ? 'One per line, however it is written. Quantities, units and names get split apart for you.'
+        : 'One step per line. Numbering like &quot;1.&quot; is stripped for you.'}</p>
+      <textarea class="paste-area" id="pasteBox" oninput="updatePastePreview()"
+        placeholder="${isIng?'1 1/2 cups all-purpose flour&#10;2 eggs&#10;a pinch of salt':'Heat the oven to 350°F.&#10;Cream the butter and sugar.'}">${esc(d.text)}</textarea>
+      <div id="pastePreview"></div>
+    </div>
+    <div class="mbtns">
+      <button class="icon-btn" onclick="closePaste()">Cancel</button>
+      <button class="icon-btn primary" id="pasteGo" onclick="commitPaste()">Add</button>
+    </div>
+  </div>`;
+  updatePastePreview();
+  const box=document.getElementById('pasteBox'); if(box) box.focus();
+}
+function updatePastePreview(){
+  if(!pasteDraft) return;
+  const box=document.getElementById('pasteBox');
+  pasteDraft.text = box ? box.value : '';
+  const isIng = pasteDraft.kind==='ingredients';
+  const rows = isIng ? parseIngredientBlock(pasteDraft.text) : parseStepBlock(pasteDraft.text);
+  const prev=document.getElementById('pastePreview');
+  const go=document.getElementById('pasteGo');
+  if(go){
+    go.textContent = rows.length
+      ? `Add ${rows.length} ${isIng?'ingredient':'step'}${rows.length===1?'':'s'}`
+      : 'Add';
+    go.disabled = !rows.length;
+  }
+  if(!prev) return;
+  if(!rows.length){
+    prev.innerHTML = pasteDraft.text.trim()
+      ? `<div class="subtle" style="margin:12px 0 0;">Nothing readable in that yet.</div>` : '';
+    return;
+  }
+  prev.innerHTML = isIng
+    ? `<div class="preview-tab">
+        <div class="pt-head"><span>Qty</span><span>Unit</span><span>Ingredient</span></div>
+        ${rows.map(r=>`<div class="pt-row">
+          <span class="q">${r.qtyRaw?esc(fmtQty(parseQty(r.qtyRaw))):'—'}</span>
+          <span class="u">${r.unit?esc(r.unit):'—'}</span>
+          <span>${esc(r.name)}</span></div>`).join('')}
+       </div>
+       <p style="margin:12px 0 0;color:var(--dim);font-size:13.5px;">They land as normal editable rows,
+         so anything read wrong is a click away from fixing.</p>`
+    : `<div class="preview-tab">${rows.map((s,i)=>`<div class="pt-step">
+        <span class="n">${i+1}</span><span>${esc(s)}</span></div>`).join('')}</div>`;
+}
+function commitPaste(){
+  if(!pasteDraft) return;
+  const isIng = pasteDraft.kind==='ingredients';
+  const rows = isIng ? parseIngredientBlock(pasteDraft.text) : parseStepBlock(pasteDraft.text);
+  if(!rows.length) return;
+  stashEditForm();
+  if(isIng){
+    // an untouched starter row would otherwise sit above everything you pasted
+    const ing=state.editing.ingredients;
+    if(ing.length===1 && !String(ing[0].name||'').trim()) ing.length=0;
+    rows.forEach(r=>ing.push({id:uid(), qtyRaw:r.qtyRaw, qty:parseQty(r.qtyRaw), unit:r.unit, name:r.name}));
+  } else {
+    const st=state.editing.instructions;
+    if(st.length===1 && !String(st[0]||'').trim()) st.length=0;
+    rows.forEach(s=>st.push(s));
+  }
+  closePaste();
+  renderMain();
+  toast(`Added ${rows.length} ${isIng?'ingredient':'step'}${rows.length===1?'':'s'}.`);
+}
+
+/* ---- dragging ingredient rows (steps have had this; ingredients hadn't) ---- */
+let dragIngIndex=null;
+function armIngDrag(el){ const r=el.closest('.ing-row2'); if(r) r.draggable=true; }
+function disarmIngDrag(el){ const r=el.closest('.ing-row2'); if(r) r.draggable=false; }
+function ingDragStart(ev,idx){
+  dragIngIndex=idx; ev.dataTransfer.effectAllowed='move';
+  try{ ev.dataTransfer.setData('text/plain',String(idx)); }catch(e){}
+  ev.currentTarget.classList.add('dragging');
+}
+function ingDragOver(ev){
+  if(dragIngIndex===null) return;
+  ev.preventDefault(); ev.dataTransfer.dropEffect='move';
+  ev.currentTarget.classList.add('drop-target');
+}
+function ingDragLeave(ev){ ev.currentTarget.classList.remove('drop-target'); }
+function ingDrop(ev,idx){
+  ev.preventDefault(); ev.currentTarget.classList.remove('drop-target');
+  const from = dragIngIndex!==null ? dragIngIndex : parseInt(ev.dataTransfer.getData('text/plain'),10);
+  dragIngIndex=null; moveIng(from, idx);
+}
+function ingDragEnd(ev){
+  dragIngIndex=null; ev.currentTarget.draggable=false;
+  document.querySelectorAll('.ing-row2').forEach(r=>r.classList.remove('dragging','drop-target'));
+}
+function moveIng(from,to){
+  const arr=state.editing && state.editing.ingredients;
+  if(!arr || !Number.isInteger(from) || !Number.isInteger(to)) return;
+  if(from===to || from<0 || to<0 || from>=arr.length || to>=arr.length) return;
+  stashEditForm();
+  const [item]=arr.splice(from,1); arr.splice(to,0,item);
   renderMain();
 }
 
@@ -2132,7 +2545,7 @@ function applyScanResult(res){
     ingredients:ings, instructions:r.instructions||[],
   };
   state.scanSource={image:state.scanImage, flagged:res.flagged||[], notes:res.notes||''};
-  state.view='editRecipe'; render();
+  state.view='editRecipe'; markEditBaseline(); render();
   const n=(res.flagged||[]).length;
   toast(n?`Recipe read — ${n} line${n!==1?'s':''} flagged for you to check.`:'Recipe read — please review before saving.');
 }
@@ -2153,21 +2566,33 @@ function startManualRecipe(){
   attemptNav(()=>{
     state.scanSource=null; state.scanImage=null;
     state.editing=blankRecipeDraft();
-    state.view='editRecipe'; render();
+    state.view='editRecipe'; markEditBaseline(); render();
   });
 }
 function startEditRecipe(id){
   attemptNav(()=>{
     state.scanSource=null; state.scanImage=null;
     state.editing=JSON.parse(JSON.stringify(recipes.find(x=>x.id===id)));
-    state.view='editRecipe'; render();
+    state.view='editRecipe'; markEditBaseline(); render();
   });
+}
+function editBar(title, saveLabel, saveFn, cancelFn){
+  const dirty = isEditDirty();
+  return `<div class="editbar no-print">
+    <h1>${esc(title)}</h1>
+    ${dirty?`<span class="dirty">● unsaved changes</span>`:''}
+    <div class="right">
+      <button class="icon-btn" onclick="${cancelFn}">Cancel</button>
+      <button class="icon-btn primary" onclick="${saveFn}">💾 ${esc(saveLabel)}</button>
+    </div>
+  </div>`;
 }
 function viewEditRecipe(){
   const e=state.editing, isNew=!e.id;
+  const total=(e.prepMinutes||0)+(e.cookMinutes||0);
   return `
-    <button class="back" onclick="cancelEdit()">← Cancel</button>
-    <h1 class="title">${state.scanSource?'Review Scanned Recipe':(isNew?'Add New Recipe':'Edit Recipe')}</h1>
+    ${editBar(state.scanSource?'Review Scanned Recipe':(isNew?'Add New Recipe':'Edit Recipe'),
+      'Save Recipe','saveEdit()','cancelEdit()')}
     ${state.scanSource?`
       <div class="scan-panel">
         <img src="${state.scanSource.image}" alt="Scanned source">
@@ -2178,82 +2603,168 @@ function viewEditRecipe(){
           and the original photo gets attached to the recipe for reference.</p>
           ${state.scanSource.notes?`<p style="margin-top:8px;"><b>Note from the scan:</b> ${esc(state.scanSource.notes)}</p>`:''}
         </div>
-      </div>`:
-      `<div class="notice">On save, ingredients are scanned against your substitutions library automatically.</div>`}
-    <div class="form-row"><label>Title</label><input type="text" id="f_title" value="${escA(e.title)}"></div>
-    <div class="form-row">
-      <label>Categories (pick any number)</label>
-      <div class="cat-picker">
-        ${allCategories.map((c,i)=>`<span class="cat-chip ${e.categories.includes(c)?'on':''}" onclick="toggleCat(${i})">${e.categories.includes(c)?'✓':'+'} ${esc(c)}</span>`).join('')}
-      </div>
-      <div style="display:flex;gap:8px;max-width:420px;">
-        <input type="text" id="f_newcat" placeholder="Create a new category..." style="flex:1;padding:9px 12px;border-radius:3px;border:1px solid var(--rule);font-size:14px;background:var(--panel);color:var(--cream);font-family:var(--body);">
-        <button class="icon-btn" onclick="addCategory()">+ Add</button>
-      </div>
-    </div>
-    <div style="display:flex;gap:14px;flex-wrap:wrap;">
-      <div class="form-row" style="flex:1;min-width:130px;"><label>Base Servings</label><input type="text" id="f_servings" value="${e.baseServings}"></div>
-      <div class="form-row" style="flex:1;min-width:120px;"><label>Prep (minutes)</label>
-        <input type="text" id="f_prep" value="${e.prepMinutes||''}" placeholder="15" inputmode="numeric"></div>
-      <div class="form-row" style="flex:1;min-width:120px;"><label>Cook (minutes)</label>
-        <input type="text" id="f_cook" value="${e.cookMinutes||''}" placeholder="55" inputmode="numeric"></div>
-      <div class="form-row" style="flex:1;min-width:110px;"><label>Emoji</label><input type="text" id="f_emoji" value="${escA(e.emoji)}"></div>
-      <div class="form-row" style="flex:1;min-width:120px;"><label>Times cooked</label>
-        <input type="text" id="f_cooked" value="${e.timesCooked||0}" inputmode="numeric"></div>
-    </div>
-    <div class="subtle" style="margin:-8px 0 16px;font-size:12px;">
-      Times are optional — leave them blank and the recipe page shows a dash rather than a zero.</div>
-    <div class="form-row"><label>Tags (comma separated)</label><input type="text" id="f_tags" value="${escA(e.tags.join(', '))}"></div>
-    <div style="display:flex;gap:14px;flex-wrap:wrap;">
-      <div class="form-row" style="flex:2;min-width:240px;">
-        <label>From a cookbook?</label>
-        <select id="f_cookbook" onchange="stashEditForm()">
-          <option value="">— Not from a cookbook —</option>
-          ${cookbooks.map(b=>`<option value="${b.id}" ${e.cookbookId===b.id?'selected':''}>${esc(b.title)}${b.author?` — ${esc(b.author)}`:''}</option>`).join('')}
-        </select>
-        ${cookbooks.length?'':`<div class="subtle" style="font-size:12px;margin-top:6px;">
-          No cookbooks yet — add one in the Cookbooks section and it will appear here.</div>`}
-      </div>
-      <div class="form-row" style="flex:1;min-width:120px;">
-        <label>Page</label>
-        <input type="text" id="f_cookbook_page" value="${escA(e.cookbookPage||'')}" placeholder="e.g. 142">
+      </div>`:''}
+
+    <div class="fsec">
+      <h2>The basics</h2>
+      <div class="fsec-body">
+        <div class="fgrid narrow" style="grid-template-columns:1fr 130px;">
+          <div class="form-row" style="margin:0;"><label>Title</label>
+            <input type="text" id="f_title" value="${escA(e.title)}" placeholder="Lemon Bread"></div>
+          <div class="form-row" style="margin:0;"><label>Emoji</label>
+            <input type="text" id="f_emoji" value="${escA(e.emoji)}" style="text-align:center;"
+              oninput="stashEditForm()"></div>
+        </div>
+        ${renderEmojiPicker('recipe', e.emoji, 'f_emoji')}
+
+        <div class="form-row" style="margin:22px 0 0;"><label>Categories</label>
+          <div class="cat-picker">
+            ${allCategories.map((c,i)=>`<span class="cat-chip ${e.categories.includes(c)?'on':''}" onclick="toggleCat(${i})">${e.categories.includes(c)?'✓':'+'} ${esc(c)}</span>`).join('')}
+          </div>
+          <div style="display:flex;gap:8px;max-width:420px;">
+            <input type="text" id="f_newcat" placeholder="Create a new category..."
+              onkeydown="if(event.key==='Enter'){event.preventDefault();addCategory();}"
+              style="flex:1;padding:9px 12px;border-radius:3px;border:1px solid var(--rule);font-size:14px;background:var(--panel);color:var(--cream);font-family:var(--body);">
+            <button class="icon-btn" onclick="addCategory()">+ Add</button>
+          </div>
+        </div>
+
+        <div class="form-row narrow" style="margin:22px 0 0;"><label>Tags (comma separated)</label>
+          <input type="text" id="f_tags" value="${escA(e.tags.join(', '))}" placeholder="citrus, baking"></div>
       </div>
     </div>
 
-    <div class="form-row">
-      <label>Notes</label>
-      <textarea id="f_notes" rows="4" placeholder="Anything worth remembering — tweaks you made, what to serve it with, who liked it..."
-        style="width:100%;padding:10px 12px;border-radius:3px;border:1px solid var(--rule);font-size:15px;background:var(--panel);color:var(--cream);font-family:var(--body);">${esc(e.notes||'')}</textarea>
+    <div class="fsec">
+      <h2>Timing &amp; source <span class="hint">all optional</span></h2>
+      <div class="fsec-body">
+        <div class="fgrid" style="grid-template-columns:repeat(4,1fr);max-width:760px;">
+          <div class="form-row" style="margin:0;"><label>Serves</label>
+            <input type="text" id="f_servings" value="${escA(String(e.baseServings))}"></div>
+          <div class="form-row" style="margin:0;"><label>Prep (min)</label>
+            <input type="text" id="f_prep" value="${e.prepMinutes||''}" placeholder="15" inputmode="numeric"
+              oninput="stashEditForm(); refreshTotalNote();"></div>
+          <div class="form-row" style="margin:0;"><label>Cook (min)</label>
+            <input type="text" id="f_cook" value="${e.cookMinutes||''}" placeholder="55" inputmode="numeric"
+              oninput="stashEditForm(); refreshTotalNote();"></div>
+          <div class="form-row" style="margin:0;"><label>Page</label>
+            <input type="text" id="f_cookbook_page" value="${escA(e.cookbookPage||'')}" placeholder="112"></div>
+        </div>
+        <div class="total-note" id="totalNote">${total?`→ ${fmtTotal(total)} total`:'&nbsp;'}</div>
+        <div class="form-row narrow" style="margin:16px 0 0;"><label>From a cookbook?</label>
+          <select id="f_cookbook" onchange="stashEditForm()">
+            <option value="">— Not from a cookbook —</option>
+            ${cookbooks.map(b=>`<option value="${b.id}" ${e.cookbookId===b.id?'selected':''}>${esc(b.title)}${b.author?` — ${esc(b.author)}`:''}</option>`).join('')}
+          </select>
+          ${cookbooks.length?'':`<div class="subtle" style="font-size:12px;margin-top:6px;">
+            No cookbooks yet — add one in the Cookbooks section and it will appear here.</div>`}
+        </div>
+      </div>
     </div>
 
-    <div class="form-row"><label>Ingredients</label>
-      <div class="subtle" style="margin:-2px 0 8px;font-size:12px;">Quantities accept fractions — <code>1/2</code>, <code>1 1/2</code>, <code>¾</code>, or decimals.</div>
-      ${e.ingredients.map((i,idx)=>{
-        const flag=state.scanSource&&state.scanSource.flagged.includes(idx);
-        return `<div class="ing-row-edit ${flag?'needs-review':''}">
-        <input type="text" placeholder="qty" value="${escA(i.qtyRaw!=null?i.qtyRaw:fmtQty(i.qty))}" oninput="editIngField(${idx},'qty',this.value)" style="max-width:76px;">
-        <input type="text" placeholder="unit" value="${escA(i.unit)}" oninput="editIngField(${idx},'unit',this.value)" style="max-width:90px;">
-        <input type="text" placeholder="ingredient name" value="${escA(i.name)}" oninput="editIngField(${idx},'name',this.value)">
-        ${flag?`<span class="review-flag">check</span>`:''}
-        <button class="small-x" onclick="removeIng(${idx})">×</button></div>`;}).join('')}
-      <button class="dashed-add" onclick="addIngRow()">+ Add ingredient</button></div>
-    <div class="form-row"><label>Instructions</label>
-      ${e.instructions.length>1?`<div class="subtle" style="margin:-2px 0 8px;font-size:12px;">
-        Drag the ⠿ handle to reorder, or use the arrows.</div>`:''}
-      ${e.instructions.map((s,idx)=>`<div class="step-row-edit" draggable="false"
-          ondragstart="stepDragStart(event,${idx})" ondragover="stepDragOver(event)"
-          ondragleave="stepDragLeave(event)" ondrop="stepDrop(event,${idx})" ondragend="stepDragEnd(event)">
-        <span class="drag-handle" title="Drag to reorder"
-          onmousedown="armDrag(this)" onmouseup="disarmDrag(this)">⠿</span>
-        <span class="step-num">${idx+1}</span>
-        <textarea oninput="editStep(${idx},this.value)">${esc(s)}</textarea>
-        <span class="step-move no-print">
-          <button class="mv" title="Move up" ${idx===0?'disabled':''} onclick="moveStep(${idx},${idx-1})">↑</button>
-          <button class="mv" title="Move down" ${idx===e.instructions.length-1?'disabled':''} onclick="moveStep(${idx},${idx+1})">↓</button>
-        </span>
-        <button class="small-x" onclick="removeStep(${idx})">×</button></div>`).join('')}
-      <button class="dashed-add" onclick="addStepRow()">+ Add step</button></div>
-    <button class="icon-btn primary" onclick="saveEdit()">💾 Save Recipe</button>`;
+    <div class="fsec">
+      <h2>Notes <span class="hint">shown above the recipe when you cook it</span></h2>
+      <div class="fsec-body">
+        <textarea id="f_notes" rows="3" placeholder="Tweaks you made, what to serve it with, who liked it..."
+          style="width:100%;max-width:640px;padding:11px 13px;border-radius:3px;border:1px solid var(--rule);font-size:15px;background:var(--panel);color:var(--cream);font-family:var(--body);"
+          oninput="stashEditForm()">${esc(e.notes||'')}</textarea>
+      </div>
+    </div>
+
+    <div class="edit-cols">
+      <div class="fsec" style="margin-bottom:0;">
+        <h2>Ingredients <span class="hint">${e.ingredients.length}</span></h2>
+        <div class="fsec-body">
+          <div class="ing-cols"><span></span><span>Qty</span><span>Unit</span><span>Ingredient</span><span></span></div>
+          ${e.ingredients.map((i,idx)=>{
+            const flag=state.scanSource&&state.scanSource.flagged.includes(idx);
+            return `<div class="ing-row2 ${flag?'needs-review':''}" draggable="false"
+              ondragstart="ingDragStart(event,${idx})" ondragover="ingDragOver(event)"
+              ondragleave="ingDragLeave(event)" ondrop="ingDrop(event,${idx})" ondragend="ingDragEnd(event)">
+            <span class="grip" title="Drag to reorder"
+              onmousedown="armIngDrag(this)" onmouseup="disarmIngDrag(this)">⠿</span>
+            <input class="mono" placeholder="1" value="${escA(i.qtyRaw!=null?i.qtyRaw:fmtQty(i.qty))}"
+              oninput="editIngField(${idx},'qty',this.value)">
+            <input class="mono" placeholder="—" value="${escA(i.unit)}"
+              oninput="editIngField(${idx},'unit',this.value)" list="unitList">
+            <input placeholder="ingredient name" value="${escA(i.name)}"
+              oninput="editIngField(${idx},'name',this.value)">
+            <button class="kill" title="Remove" onclick="removeIng(${idx})">×</button></div>`;}).join('')}
+          <datalist id="unitList">${['cup','cups','tbsp','tsp','oz','lb','g','kg','ml','l','cloves','pinch','can','slices','sprigs']
+            .map(u=>`<option value="${u}">`).join('')}</datalist>
+          <div class="rowbtns">
+            <button class="dashed-add" style="width:auto;flex:1;" onclick="addIngRow()">+ Add ingredient</button>
+            <button class="icon-btn" onclick="openPaste('ingredients')">📋 Paste a list</button>
+          </div>
+          <div class="subtle" style="font-size:12px;margin:10px 0 0;">
+            Quantities take fractions — <code>1/2</code>, <code>1 1/2</code>, <code>¾</code>.</div>
+        </div>
+      </div>
+
+      <div class="fsec" style="margin-bottom:0;">
+        <h2>Instructions <span class="hint">${e.instructions.length} step${e.instructions.length===1?'':'s'}</span></h2>
+        <div class="fsec-body">
+          ${e.instructions.map((s,idx)=>`<div class="step2" draggable="false"
+              ondragstart="stepDragStart(event,${idx})" ondragover="stepDragOver(event)"
+              ondragleave="stepDragLeave(event)" ondrop="stepDrop(event,${idx})" ondragend="stepDragEnd(event)">
+            <span class="grip" title="Drag to reorder"
+              onmousedown="armDrag(this)" onmouseup="disarmDrag(this)">⠿</span>
+            <span class="num">${idx+1}</span>
+            <textarea oninput="editStep(${idx},this.value)">${esc(s)}</textarea>
+            <span>
+              <button class="mv" title="Move up" ${idx===0?'disabled':''} onclick="moveStep(${idx},${idx-1})">↑</button>
+              <button class="mv" title="Move down" ${idx===e.instructions.length-1?'disabled':''} onclick="moveStep(${idx},${idx+1})">↓</button>
+            </span>
+            <button class="kill" title="Remove" onclick="removeStep(${idx})">×</button></div>`).join('')}
+          <div class="rowbtns">
+            <button class="dashed-add" style="width:auto;flex:1;" onclick="addStepRow()">+ Add step</button>
+            <button class="icon-btn" onclick="openPaste('steps')">📋 Paste steps</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fsec" style="margin-top:34px;">
+      <h2>Record</h2>
+      <div class="fsec-body">
+        <div class="record-strip">
+          <div><span class="fl">Times cooked</span>
+            <input type="text" id="f_cooked" value="${e.timesCooked||0}" inputmode="numeric"
+              oninput="stashEditForm()"></div>
+          <div class="record-note">Normally earned one meal at a time. Changing it here rewrites the history
+            behind your Most Cooked rankings, so it asks before saving.</div>
+          ${isNew?'':`<div class="danger-side">
+            <button class="icon-btn danger" onclick="confirmDeleteRecipe('${e.id}')">🗑 Delete this recipe</button></div>`}
+        </div>
+      </div>
+    </div>`;
+}
+function fmtTotal(n){
+  if(!n) return '';
+  if(n<60) return `${n} min`;
+  const h=Math.floor(n/60), m=n%60;
+  return m ? `${h} hr ${m} min` : `${h} hr`;
+}
+/* The total is the one thing on this form derived from other fields, so it
+   updates in place rather than forcing a redraw that would cost you focus. */
+/* The unsaved marker has to react to typing, but a redraw on every keystroke
+   would steal the caret. This patches just the pill. */
+function refreshDirtyFlag(){
+  const bar=document.querySelector('.editbar');
+  if(!bar) return;
+  const on=isEditDirty();
+  const pill=bar.querySelector('.dirty');
+  if(on && !pill){
+    const el=document.createElement('span');
+    el.className='dirty'; el.textContent='● unsaved changes';
+    bar.querySelector('h1').insertAdjacentElement('afterend', el);
+  } else if(!on && pill){ pill.remove(); }
+}
+document.addEventListener('input', ()=>{ if(inEditForm()) refreshDirtyFlag(); });
+function refreshTotalNote(){
+  const el=document.getElementById('totalNote');
+  if(!el || !state.editing) return;
+  const t=(state.editing.prepMinutes||0)+(state.editing.cookMinutes||0);
+  el.innerHTML = t ? `→ ${fmtTotal(t)} total` : '&nbsp;';
 }
 function stashEditForm(){
   const e=state.editing;
@@ -2331,7 +2842,9 @@ function moveStep(from, to){
   renderMain();
 }
 
-function cancelEdit(){ state.editing=null; state.scanSource=null; state.scanImage=null; state.view='browse'; render(); }
+function cancelEdit(){
+  guardEdit(()=>{ clearEditDraft(); state.view='browse'; render(); });
+}
 function editIngField(idx,f,v){
   const ing=state.editing.ingredients[idx];
   if(f==='qty'){ ing.qtyRaw=v; ing.qty=parseQty(v); }   // keeps "1/2" as typed AND stores 0.5 for math
@@ -2396,7 +2909,7 @@ async function commitEdit(){
     const id = e.id || res.id;
     // keep the scanned page with the recipe so you can always check the source
     if(scan && scan.image) await uploadPhotoDataUrl(id, scan.image, 'Original scan');
-    state.editing=null; state.scanSource=null; state.scanImage=null;
+    clearEditDraft();
     const saved=recipes.find(r=>r.id===id);
     const found=saved?subsForRecipe(saved).length:0;
     openRecipe(id);

@@ -1,4 +1,4 @@
--- The Pantries — migration 005: put cooked meals on the right calendar day
+-- The Pantries — migration v2.1: put cooked meals on the right calendar day
 --
 -- THE BUG: the Worker's clock is UTC. A meal cooked at 7pm in Chicago is
 -- already "tomorrow" in UTC, so it was filed on the next day's square — or on

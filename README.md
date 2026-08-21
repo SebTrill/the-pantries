@@ -175,8 +175,14 @@ currently 1400px. Photos are re-encoded as JPEG before upload to keep the site q
 
 **Migrations** live in the repo root as `migrate-00N-*.sql` and are meant to be pasted into
 the D1 Console and executed. They are all additive and safe to re-run. Run them in order;
-`migrate-005-local-days.sql` is the most recent and repairs cook days that were recorded in
-UTC.
+`migrate-005-local-days.sql` repairs cook days that were recorded in UTC, and
+`migrate-006-times.sql` adds prep and cook minutes (both default to 0, which the app reads as
+"not recorded" and shows as an em dash), and `migrate-007-emoji.sql` adds the emoji palette.
+
+**The emoji palette holds emoji, not counts.** `emoji_palette` stores only what you added; how often
+each one is used is read live from the `recipes` and `cookbooks` tables in `loadEmojiPalette()`. That
+is deliberate — a stored tally would eventually disagree with the data, and there is no way to notice
+when it does. The palette shows the twelve most-used, with the rest behind the + button.
 
 **Add a field to every recipe** (prep time, source, oven temperature) — this one needs a
 migration, since existing rows need the new column:
@@ -209,7 +215,57 @@ server doesn't recognise, so a hard refresh on `/recipe/edit` works.
 
 ---
 
-## Three details that are easy to break
+## The recipe page
+
+Ingredients are pinned in the left column and never move. The right column tabs between
+Instructions and Substitutions. Both panels are **rendered into the page**, with the inactive one
+hidden by CSS (`.tab-panel.is-hidden`). That is not an implementation detail you can tidy away —
+see the print warning below.
+
+Applying a substitution rewrites the instruction text to match: "cream the butter" reads "cream the
+coconut oil". Two rules keep that honest, and both live in `renderStepHtml()`:
+
+1. A swapped word is always marked (`.swapword`) and names its original on hover. If the steps could
+   silently change, they would stop matching the cookbook they were copied from.
+2. A mention that *opens* a sentence is left alone by default, because that is where the cooking verb
+   lives — "Butter a 9×5 pan" means grease the pan. Swapping it would produce "Coconut oil a 9×5 pan".
+   When one turns up, `promptAmbiguousMentions()` asks rather than guessing, and the answer applies to
+   that one mention only.
+
+Per-mention answers live in `state.mentionChoices`, keyed `recipeId|ingredientId|stepIndex|occurrence`.
+`scanStep()` is deliberately the single source of that numbering — it is used both to draw a step and
+to find its ambiguous mentions, so the two can never disagree about which occurrence is which.
+
+---
+
+## The edit forms
+
+Save and Cancel live in a sticky bar at the top. Fields are capped at a readable width, grouped into
+sections, and ingredients sit beside instructions — the same shape as the recipe page you are editing
+toward. Times cooked and Delete live in a Record strip at the bottom, because both are corrections
+rather than things you fill in while writing a recipe.
+
+**The unsaved-work guard.** Dirtiness is *measured*, not tracked: `markEditBaseline()` snapshots the
+draft when a form opens and `isEditDirty()` compares the live draft against it. A change you typed and
+then undid is correctly not dirty. `guardEdit(leave, onStay)` fronts every exit — the top bar, Cancel,
+the browser's back button, and `beforeunload` for closing the tab.
+
+Back is the awkward one. By the time `popstate` fires the address has already changed, so choosing to
+stay has to push the edit URL back on. That is what the `onStay` callback is for.
+
+One trap worth remembering: `openRecipe()` guards on `inEditForm() && isEditDirty()`, not on
+`inEditForm()` alone. Guarding on the latter recurses forever, because the retry callback calls
+`openRecipe()` again while the view is still the form. Saving a recipe hits that path every time.
+
+**Pasting a list.** `parseIngredientLine()` splits "1 1/2 cups all-purpose flour" into quantity, unit
+and name using the same `parseQty()` that protects fractions everywhere else. It strips bullets and
+list numbering, treats a leading "a"/"an" as a stand-in quantity so "a pinch of salt" reads correctly,
+and only accepts a word as a unit if it is in `COMMON_UNITS`. Everything parsed is shown before
+anything is added.
+
+---
+
+## Four details that are easy to break
 
 **Calendar days come from the browser, not the server.** The Worker's clock is UTC. Stamp a
 cook's day from it and a meal cooked at 7pm in Chicago is filed under tomorrow — logged, but
@@ -217,6 +273,18 @@ on the wrong square. So the browser sends its own local date with every cook and
 Worker sanity-checks it (`localDay()` in `src/index.js`), and every day-key on the client is
 built from `localDay()` rather than `toISOString()`. If you ever reach for
 `toISOString().slice(0,10)` to get "today", you have just reintroduced this bug.
+
+**Printing needs both tab panels in the DOM.** A print stylesheet can only hide what is already on
+the page. The recipe page used to render just the open tab, so printing from Ingredients gave you a
+recipe with no method and printing from Instructions gave you steps with no ingredients — whichever
+tab you happened to be on became the whole printout. Both panels are now always rendered and the
+inactive one is hidden with CSS, which is what lets `@media print` bring the instructions back. If
+you ever "optimise" this by only rendering the active panel, that bug comes straight back.
+
+**Notes have their own endpoint for a reason.** `PUT /api/recipes/:id` rebuilds a recipe from its
+payload — it deletes and reinserts every ingredient, step, tag and category. A notes-only PUT would
+therefore empty the recipe. Inline notes editing uses `PATCH /api/recipes/:id/notes`, which touches
+one column. Do not route it back through PUT.
 
 **Quantities are stored twice, on purpose.** `qty` is a number for scaling maths; `qty_raw`
 is the text exactly as typed. If you ever collapse those into one field, `1/2` will silently
