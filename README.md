@@ -385,6 +385,25 @@ two rows' buttons, so a click meant for the row underneath landed on this row's 
 
 Migration `migrations/008-shopping.sql` adds `sources` and `alt` and backfills from `from_recipe`.
 
+**The home page earns its sections.** `HOME_EARNED` in `public/app.js` holds one predicate per
+section, each named for the claim it guards. A section does not render until the collection can
+support what it asserts: no ranking without three recipes actually cooked, no distribution while one
+category holds every recipe, no six-month sparkline over five empty months, no shelf with one book.
+The calendar and the average-rating card deliberately appear on the first cook and the first rating —
+they were tried at two cooking days and three ratings, and that read as the page withholding things
+it plainly had.
+Nothing announces itself as missing — sections simply appear when they have something true to say.
+
+This replaced four separate bugs with one rule. The worst was `mostCooked()`, which sorted every
+recipe and took the top three whatever the counts were, so a collection with one cooked recipe got a
+"Most Cooked" podium whose second and third places had been cooked zero times. It now reads from
+`cookedRecipes()` and the section is gated on there being three of them.
+
+`seed-big.js` spreads its cook history across real dates via `/cook-dates`. It used to log every
+meal on the day the fixture ran — 22 recipes cooked 200-odd times in one afternoon — which is not a
+collection anyone has, and it hid this entire class of small-collection bug from every suite that
+used it.
+
 **Macros are nullable on purpose.** Six per-serving figures live on `recipes` as `kcal`,
 `protein_g`, `fat_g`, `carbs_g`, `sugar_g` and `fiber_g`, added by `migrations/010-macros.sql`.
 Everywhere else in this schema a missing number is 0 — no recipe takes zero minutes to prep, so 0 is

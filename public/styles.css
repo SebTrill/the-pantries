@@ -633,12 +633,39 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
 }
 
 /* ---------- home ---------- */
-.home-hero{border:1px solid var(--rule);border-radius:var(--radius);padding:40px 32px 34px;
+/* The question and its answer are one block. The suggestion used to sit five
+   sections below the headline that asks for it. */
+.home-hero{border:1px solid var(--rule);border-radius:var(--radius);padding:0;
   margin-bottom:28px;text-align:center;position:relative;overflow:hidden;
   background:linear-gradient(180deg,rgba(var(--accent-rgb),.10),rgba(var(--brick-rgb),.05) 60%,transparent)}
+.hero-ask{padding:38px 32px 30px}
 .home-hero::after{content:'';position:absolute;left:0;right:0;bottom:0;height:1px;
   background:linear-gradient(90deg,transparent,var(--ochre),transparent);opacity:.5}
-.home-hero h1{font-family:var(--display);font-size:42px;line-height:1.04;color:var(--paper);
+
+/* the answer */
+.hero-answer{display:flex;gap:20px;align-items:center;text-align:left;flex-wrap:wrap;
+  padding:20px 26px;border-top:1px solid var(--rule);background:rgba(var(--sink-rgb),.35)}
+.hero-answer .t-img{width:96px;height:96px;border-radius:var(--radius);flex-shrink:0;overflow:hidden;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:42px;
+  border:1px solid var(--rule);
+  background:repeating-linear-gradient(-45deg,var(--hatch-b) 0 9px,var(--hatch-c) 9px 18px)}
+.hero-answer .t-img img{width:100%;height:100%;object-fit:cover;display:block}
+.hero-answer .t-eyebrow{font-family:var(--mono);font-size:9px;letter-spacing:.22em;
+  text-transform:uppercase;color:var(--olive);margin-bottom:7px}
+.hero-answer h3{font-family:var(--display);margin:0 0 5px;font-size:23px;color:var(--paper);
+  letter-spacing:-.015em;cursor:pointer}
+.hero-answer h3:hover{color:var(--ochre)}
+.hero-answer .t-why{font-size:14px;color:var(--dim);margin-bottom:13px}
+.hero-answer .t-btns{display:flex;gap:8px;flex-wrap:wrap}
+.hero-answer .t-roll{margin-left:auto;align-self:flex-start;font-family:var(--mono);font-size:10px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--faint);background:none;border:none;
+  cursor:pointer;white-space:nowrap;padding:4px}
+.hero-answer .t-roll:hover{color:var(--ochre)}
+@media (max-width:700px){
+  .hero-answer{padding:16px}
+  .hero-answer .t-roll{margin-left:0}
+}
+.home-hero h1{font-family:var(--display);font-size:38px;line-height:1.04;color:var(--paper);
   letter-spacing:-.02em;margin:0}
 .home-hero p{margin:12px 0 0;font-family:var(--mono);font-size:11px;letter-spacing:.22em;
   text-transform:uppercase;color:var(--dim)}
