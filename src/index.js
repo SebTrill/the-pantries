@@ -34,6 +34,9 @@
  *   POST   /api/cookbook-files/:id/focal   same, for book photos
  *   DELETE /api/cookbook-files/:id   delete a photo or file
  *   POST   /api/scan                 photo -> structured recipe (Anthropic vision)
+ *   GET    /api/emoji                emoji palette, ranked by real usage
+ *   POST   /api/emoji                add one to the palette   {kind, emoji}
+ *   DELETE /api/emoji                remove one you added     {kind, emoji}
  *   GET    /api/export               full JSON backup
  *   GET    /api/whoami               logged-in identity (via Cloudflare Access)
  */
@@ -129,6 +132,55 @@ function parseQty(input) {
   return matched ? total : 0;
 }
 
+/* ---------- emoji palette ----------
+ * A starting row that covers most cooking, plus whatever you add. Ordering is
+ * by how many recipes actually use each one, counted live — so the palette
+ * reorders itself around how you really cook, and can never disagree with the
+ * data the way a separate tally would.
+ */
+const DEFAULT_EMOJI = {
+  recipe: ['🍽️','🍲','🍞','🥘','🍝','🍰','🥗','🍳','🌮','🍜','🥧','🍪',
+           '🍛','🥩','🐟','🍕','🥞','🍚','🥣','🍋'],
+  cookbook: ['📕','📗','📘','📙','📔','📒','📚','📖','🍲','🥘'],
+};
+
+/** Rejects anything that is plainly text. Emoji vary wildly in code-point
+ *  count (👨‍🍳 is three), so length is a sanity bound, not a definition. */
+function looksLikeEmoji(str) {
+  const s = String(str || '').trim();
+  if (!s) return false;
+  if (/[a-z0-9]/i.test(s)) return false;
+  const points = [...s];
+  return points.length >= 1 && points.length <= 8;
+}
+
+async function loadEmojiPalette(db) {
+  const [custom, recipeUse, bookUse] = await Promise.all([
+    db.prepare('SELECT kind, emoji, added_at FROM emoji_palette').all(),
+    db.prepare('SELECT emoji, COUNT(*) AS n FROM recipes GROUP BY emoji').all(),
+    db.prepare('SELECT emoji, COUNT(*) AS n FROM cookbooks GROUP BY emoji').all(),
+  ]);
+  const build = (kind, useRows) => {
+    const uses = new Map(useRows.results.map(r => [r.emoji, r.n]));
+    const mine = new Map();                       // emoji -> added_at, for this kind
+    for (const c of custom.results) if (c.kind === kind) mine.set(c.emoji, c.added_at);
+    // everything we know about: the defaults, what you added, and what is in use
+    const all = new Set([...DEFAULT_EMOJI[kind], ...mine.keys(), ...uses.keys()]);
+    const order = new Map(DEFAULT_EMOJI[kind].map((e, i) => [e, i]));
+    return [...all].filter(Boolean).map(emoji => ({
+      emoji,
+      uses: uses.get(emoji) || 0,
+      custom: mine.has(emoji),
+    })).sort((a, b) =>
+      b.uses - a.uses ||
+      (mine.get(b.emoji) || 0) - (mine.get(a.emoji) || 0) ||
+      (order.has(a.emoji) ? order.get(a.emoji) : 999) -
+      (order.has(b.emoji) ? order.get(b.emoji) : 999) ||
+      a.emoji.localeCompare(b.emoji));
+  };
+  return { recipe: build('recipe', recipeUse), cookbook: build('cookbook', bookUse) };
+}
+
 /* ---------- data loading ---------- */
 
 async function loadRecipes(db) {
@@ -218,7 +270,7 @@ async function loadCookbooks(db) {
 
 async function bootstrap(db) {
   const since = dayKey(Date.now() - 400 * 86400000);   // a full year of history, plus slack
-  const [recipes, subs, shopping, cats, cookbooks, activity, lastCooked, cookMonths] = await Promise.all([
+  const [recipes, subs, shopping, cats, cookbooks, activity, lastCooked, cookMonths, emoji] = await Promise.all([
     loadRecipes(db),
     db.prepare('SELECT * FROM substitutions ORDER BY ingredient').all(),
     db.prepare('SELECT * FROM shopping_items ORDER BY created_at').all(),
@@ -230,6 +282,7 @@ async function bootstrap(db) {
     // per-recipe monthly counts, for the little frequency bar on a recipe page
     db.prepare(`SELECT recipe_id, substr(cooked_on,1,7) AS month, COUNT(*) AS n
                 FROM cook_events GROUP BY recipe_id, month`).all(),
+    loadEmojiPalette(db),
   ]);
   const lastById = new Map(lastCooked.results.map(r => [r.recipe_id, r.last]));
   const monthsById = new Map();
@@ -258,6 +311,7 @@ async function bootstrap(db) {
   return {
     recipes,
     cookbooks,
+    emojiPalette: emoji,
     activity: activity.results.map(a => ({ day: a.day, n: a.n })),
     globalSubs,
     allCategories: cats.results.map(c => c.name),
@@ -627,6 +681,34 @@ export default {
 
       if (path === '/api/bootstrap' && method === 'GET') {
         return json(await bootstrap(db));
+      }
+
+      /* --- emoji palette --- */
+      if (path === '/api/emoji') {
+        if (method === 'GET') return json(await loadEmojiPalette(db));
+        const b = await readJson(request);
+        const kind = b.kind === 'cookbook' ? 'cookbook' : 'recipe';
+        const emoji = String(b.emoji || '').trim();
+        if (!looksLikeEmoji(emoji)) return err('That does not look like an emoji.');
+        if (method === 'POST') {
+          await db.prepare(
+            'INSERT OR IGNORE INTO emoji_palette (kind,emoji,added_at) VALUES (?,?,?)'
+          ).bind(kind, emoji, now()).run();
+          return json(await bootstrap(db), 201);
+        }
+        if (method === 'DELETE') {
+          // built-ins and anything a recipe is actually using stay put
+          if (DEFAULT_EMOJI[kind].includes(emoji)) return err('That one is part of the default set.');
+          const table = kind === 'cookbook' ? 'cookbooks' : 'recipes';
+          const inUse = await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE emoji=?`)
+            .bind(emoji).first();
+          if (inUse && inUse.n > 0) {
+            return err(`Still used by ${inUse.n} ${kind === 'cookbook' ? 'cookbook' : 'recipe'}${inUse.n===1?'':'s'}.`);
+          }
+          await db.prepare('DELETE FROM emoji_palette WHERE kind=? AND emoji=?')
+            .bind(kind, emoji).run();
+          return json(await bootstrap(db));
+        }
       }
 
       if (path === '/api/export' && method === 'GET') {

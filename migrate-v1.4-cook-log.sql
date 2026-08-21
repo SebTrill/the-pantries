@@ -1,4 +1,4 @@
--- The Pantries — migration 004: a cook log
+-- The Pantries — migration v1.4: a cook log
 -- Until now we stored only a counter ("cooked 14 times") with no record of WHEN.
 -- This table logs one row per cook, which is what the activity calendar,
 -- streaks and any future "on this day" feature need.

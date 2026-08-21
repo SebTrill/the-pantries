@@ -140,6 +140,13 @@ CREATE TABLE IF NOT EXISTS shopping_items (
   created_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS emoji_palette (
+  kind     TEXT NOT NULL,          -- 'recipe' | 'cookbook'
+  emoji    TEXT NOT NULL,
+  added_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, emoji)
+);
+
 CREATE INDEX IF NOT EXISTS idx_ingredients_recipe   ON ingredients(recipe_id, position);
 CREATE INDEX IF NOT EXISTS idx_instructions_recipe  ON instructions(recipe_id, position);
 CREATE INDEX IF NOT EXISTS idx_ratings_recipe       ON ratings(recipe_id, created_at DESC);

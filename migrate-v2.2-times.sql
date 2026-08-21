@@ -1,4 +1,4 @@
--- The Pantries — migration 006: how long a recipe takes
+-- The Pantries — migration v2.2: how long a recipe takes
 --
 -- Until now a recipe recorded how many it serves but not how long it takes,
 -- which is usually the first thing you want to know when deciding what to cook.

@@ -1,4 +1,4 @@
--- The Pantries — migration 002: notes + cookbooks
+-- The Pantries — migration v1.2: notes + cookbooks
 -- Safe to run on a live database. Only adds; nothing is dropped or rewritten,
 -- so existing recipes, ratings and photos are untouched.
 -- Paste this into the D1 Console and Execute.
