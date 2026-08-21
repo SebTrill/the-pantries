@@ -159,6 +159,10 @@ let state = {
   expandedSubGroups:{},  // which ingredient groups have their recipe list open
   showSubAddForm:false,
   emojiOpen:null,        // which emoji palette has its "more" panel open
+  bookFilter:'all',      // browse: all | any | none | <cookbookId>
+  quickFilters:[],       // browse: never / unrated / nophoto / quick
+  browseView:'grid',     // grid | list
+  bookSort:'recipes',
   recipeSubSearch:'',    // filter inside a recipe's substitutions tab
   notesDraft:null,       // {id,text} while notes are being edited in place
   showRateForm:false,
@@ -308,20 +312,35 @@ function relevanceScore(r,q){
   return s;
 }
 function filteredSorted(){
+  const q = state.searchQuery.trim().toLowerCase();
   let list = recipes.filter(r=>{
-    const catOk = state.categoryFilter==='all' || r.categories.includes(state.categoryFilter);
-    const q = state.searchQuery.trim().toLowerCase();
-    return catOk && (!q || relevanceScore(r,q)>0);
+    if(state.categoryFilter!=='all' && !r.categories.includes(state.categoryFilter)) return false;
+    if(state.bookFilter==='any'  && !r.cookbookId) return false;
+    if(state.bookFilter==='none' && r.cookbookId) return false;
+    if(!['all','any','none'].includes(state.bookFilter) && r.cookbookId!==state.bookFilter) return false;
+    for(const key of state.quickFilters){
+      const qf=QUICK_FILTERS.find(x=>x.key===key);
+      if(qf && !qf.test(r)) return false;
+    }
+    return !q || relevanceScore(r,q)>0;
   });
   let sortBy = state.sortBy;
-  if(!state.searchQuery.trim() && sortBy==='relevant') sortBy='newest';
+  if(!q && sortBy==='relevant') sortBy='newest';
+  // an untimed or never-cooked recipe sorts last rather than first, so a blank
+  // doesn't masquerade as "quickest" or "most recent"
+  const timeOf = r => totalMinutes(r) || Infinity;
+  const lastOf = r => r.lastCookedAt || 0;
   const cmp = {
     newest:(a,b)=>new Date(b.dateAdded)-new Date(a.dateAdded),
     oldest:(a,b)=>new Date(a.dateAdded)-new Date(b.dateAdded),
-    relevant:(a,b)=>relevanceScore(b,state.searchQuery.toLowerCase())-relevanceScore(a,state.searchQuery.toLowerCase()),
-    mostUsed:(a,b)=>b.timesCooked-a.timesCooked,
-    topRated:(a,b)=>avgRating(b)-avgRating(a),
-  }[sortBy];
+    az:(a,b)=>a.title.localeCompare(b.title),
+    za:(a,b)=>b.title.localeCompare(a.title),
+    relevant:(a,b)=>relevanceScore(b,q)-relevanceScore(a,q),
+    mostUsed:(a,b)=>b.timesCooked-a.timesCooked || a.title.localeCompare(b.title),
+    topRated:(a,b)=>avgRating(b)-avgRating(a) || b.ratings.length-a.ratings.length,
+    lastCooked:(a,b)=>lastOf(b)-lastOf(a) || a.title.localeCompare(b.title),
+    time:(a,b)=>timeOf(a)-timeOf(b) || a.title.localeCompare(b.title),
+  }[sortBy] || ((a,b)=>new Date(b.dateAdded)-new Date(a.dateAdded));
   return list.sort(cmp);
 }
 function storeLink(store,item){
@@ -568,9 +587,9 @@ function recentActivity(n=6){
 function runHomeSearch(){
   const el=document.getElementById('homeSearch');
   const v=el?el.value.trim():'';
+  clearBrowseFilters();
   state.searchQuery=v;
   state.sortBy=v?'relevant':'newest';
-  state.categoryFilter='all';
   goto('browse');
 }
 /* ---------- home page stats ---------- */
@@ -620,9 +639,11 @@ function renderKpiRow(){
     <div class="kpi"><div class="k-label">Average rating</div>
       <div class="k-value">${avg?avg.toFixed(1):'—'}</div>
       <div class="k-sub">${ratedRecipes().length} rated recipe${ratedRecipes().length===1?'':'s'}</div></div>
-    <div class="kpi ${never?'kpi-nudge':''}"><div class="k-label">Never cooked</div>
+    <div class="kpi ${never?'kpi-nudge':''} ${never?'kpi-link':''}"
+      ${never?`onclick="browseNeverCooked()" title="See them"`:''}>
+      <div class="k-label">Never cooked</div>
       <div class="k-value">${never}</div>
-      <div class="k-sub">${never?'waiting for a first try':'every recipe has been made'}</div></div>
+      <div class="k-sub">${never?'waiting for a first try →':'every recipe has been made'}</div></div>
   </div>`;
 }
 
@@ -761,8 +782,14 @@ function renderCategoryChart(){
       <div class="subtle" style="margin:14px 0 0;font-size:12px;">Click a bar to browse that category.</div>`}
     </div>`;
 }
+function browseNeverCooked(){
+  clearBrowseFilters();
+  state.quickFilters=['never']; state.sortBy='az';
+  goto('browse');
+}
 function browseCategory(name){
-  state.searchQuery=''; state.categoryFilter=name; state.sortBy='mostUsed'; goto('browse');
+  clearBrowseFilters();
+  state.categoryFilter=name; state.sortBy='mostUsed'; goto('browse');
 }
 
 /* ---------- activity calendar ---------- */
@@ -951,7 +978,7 @@ function viewHome(){
       <div>
         <div class="home-sec">
           ${secHead('mostCooked','🔥 Most Cooked',
-            `<button class="link" onclick="state.searchQuery='';state.sortBy='mostUsed';goto('browse')">See all →</button>`)}
+            `<button class="link" onclick="clearBrowseFilters();state.sortBy='mostUsed';goto('browse')">See all →</button>`)}
           ${isCollapsed('mostCooked')?''
             :cooked.length?`<div class="grid">${cooked.map((r,i)=>rankedCard(r,i)).join('')}</div>`
             :`<div class="empty">Cook something and it'll show up here.</div>`}
@@ -1028,44 +1055,95 @@ function fmtBytes(n){
 }
 function onBookSearch(el){ focusId='bookSearch'; focusPos=el.selectionStart; state.bookSearch=el.value; renderMain(); }
 
+/* ---- Browse Cookbooks ----
+ * A cookbook is portrait. The old card gave it a landscape thumbnail, which
+ * cropped a real cover through the middle and left an emoji stranded in a wide
+ * empty rectangle. These are 3:4, and a book with no photo gets one of the
+ * cloth-binding tones the home-page shelf already uses.
+ */
+const BOOK_TONES = ['toneA','toneB','toneC','toneD','toneE'];
+const BOOK_SORTS = [
+  { key:'recipes',   label:'Most recipes' },
+  { key:'az',        label:'A → Z' },
+  { key:'author',    label:'By author' },
+  { key:'published', label:'Most recent' },
+];
+function setBookSort(v){ state.bookSort=v; renderMain(); }
+function sortedBooks(list){
+  const n=b=>recipesInBook(b.id).length;
+  const cmp={
+    recipes:(a,b)=>n(b)-n(a) || a.title.localeCompare(b.title),
+    az:(a,b)=>a.title.localeCompare(b.title),
+    author:(a,b)=>(a.author||'~').localeCompare(b.author||'~') || a.title.localeCompare(b.title),
+    published:(a,b)=>String(b.published||'').localeCompare(String(a.published||'')) || a.title.localeCompare(b.title),
+  }[state.bookSort||'recipes'];
+  return list.slice().sort(cmp);
+}
+/** Jump to the recipes that came from nowhere in particular. */
+function browseUnlinked(){
+  clearBrowseFilters();
+  state.bookFilter='none'; state.sortBy='az';
+  goto('browse');
+}
 function viewCookbooks(){
   const q=state.bookSearch.trim().toLowerCase();
-  const list=cookbooks.filter(b=>!q ||
+  const matched=cookbooks.filter(b=>!q ||
     b.title.toLowerCase().includes(q) || (b.author||'').toLowerCase().includes(q) ||
     (b.publisher||'').toLowerCase().includes(q));
+  const list=sortedBooks(matched);
+  const linked=recipes.filter(r=>r.cookbookId).length;
+  const loose=recipes.length-linked;
   return `
-    <div class="sec-head" style="margin-bottom:4px;">
+    <div class="browse-head">
       <h1 class="title">Cookbooks</h1>
-      <button class="icon-btn primary no-print" onclick="startAddCookbook()">+ Add Cookbook</button>
+      <span class="result-count">${q
+        ? `<b>${list.length}</b> of ${cookbooks.length} books`
+        : `<b>${cookbooks.length}</b> book${cookbooks.length===1?'':'s'}${
+            recipes.length?` · ${linked} of your ${recipes.length} recipes`:''}`}</span>
+      <div class="right no-print">
+        ${cookbooks.length>1?`<select onchange="setBookSort(this.value)">
+          ${BOOK_SORTS.map(s=>`<option value="${s.key}" ${(state.bookSort||'recipes')===s.key?'selected':''}>${s.label}</option>`).join('')}
+        </select>`:''}
+        <button class="icon-btn primary" onclick="startAddCookbook()">+ Add Cookbook</button>
+      </div>
     </div>
-    <p class="subtle">${cookbooks.length} book${cookbooks.length!==1?'s':''} on the shelf</p>
-    ${cookbooks.length?`<div class="controls">
+
+    ${cookbooks.length?`<div class="controls no-print">
       <div class="search-wrap"><span class="sicon">🔍</span>
         <input id="bookSearch" type="text" placeholder="Search by title, author, or publisher..."
           value="${escA(state.bookSearch)}" oninput="onBookSearch(this)"></div>
+      ${q?`<button class="icon-btn sm" onclick="state.bookSearch='';renderMain()">✕ Clear</button>`:''}
     </div>`:''}
-    ${list.length===0?`<div class="empty">${cookbooks.length
-      ? `No cookbooks match "${esc(state.bookSearch)}".`
-      : 'No cookbooks yet. Add the books your recipes come from, and you can link recipes to them.'}</div>`
-    :`<div class="grid">${list.map(b=>{
-      const cover=bookCover(b), n=recipesInBook(b.id).length;
-      return `<div class="rcard" onclick="openCookbook('${b.id}')">
-        <button class="card-del no-print" title="Remove cookbook"
-          onclick="event.stopPropagation(); confirmDeleteCookbook('${b.id}')">×</button>
-        <div class="thumb book-thumb">${cover
-          ? `<img src="${cover.url}" alt="${escA(b.title)}" style="${focalStyle(cover)}">`
-          : b.emoji}</div>
-        <div class="body">
-          <h3>${esc(b.title)}</h3>
-          ${b.author?`<div class="book-author">${esc(b.author)}</div>`:''}
-          <div class="rmeta">
-            <span>${b.published?esc(b.published):'—'}</span>
-            <span>${n} recipe${n!==1?'s':''}</span>
-          </div>
-        </div>
-      </div>`;}).join('')}</div>`}`;
-}
 
+    ${cookbooks.length===0
+      ? `<div class="empty">No cookbooks yet. Add the books your recipes come from, and you can link
+          recipes to them.</div>`
+      : list.length===0
+        ? `<div class="empty">No cookbooks match "${esc(state.bookSearch)}".</div>`
+        : `<div class="bgrid">
+            ${list.map((b,i)=>{
+              const cover=bookCover(b), n=recipesInBook(b.id).length;
+              return `<div class="bcard" onclick="openCookbook('${b.id}')">
+                <button class="card-del no-print" title="Remove cookbook"
+                  onclick="event.stopPropagation(); confirmDeleteCookbook('${b.id}')">×</button>
+                <div class="bcov ${cover?'':BOOK_TONES[i%BOOK_TONES.length]}">${cover
+                  ? `<img src="${cover.url}" alt="${escA(b.title)}" style="${focalStyle(cover)}">`
+                  : b.emoji}</div>
+                <h3>${esc(b.title)}</h3>
+                <div class="ba">${b.author?esc(b.author):'—'}</div>
+                <div class="bm"><span>${b.published?esc(b.published):'—'}${
+                  b.edition?` · ${esc(b.edition)}`:''}</span>
+                  <span>${n} recipe${n===1?'':'s'}</span></div>
+              </div>`;}).join('')}
+            ${loose&&!q?`<div class="bcard loose" onclick="browseUnlinked()"
+              title="See the recipes that didn't come from a book">
+              <div class="bcov">🗂️</div>
+              <h3>Not from a book</h3>
+              <div class="ba">your own and the internet's</div>
+              <div class="bm"><span>—</span><span>${loose} recipe${loose===1?'':'s'}</span></div>
+            </div>`:''}
+          </div>`}`;
+}
 const BOOK_RECIPE_LIMIT = 10;
 function onBookRecipeSearch(el){
   focusId='bookRecipeSearch'; focusPos=el.selectionStart;
@@ -1363,30 +1441,190 @@ function confirmDeleteBookFile(bookId,fileId){
   });
 }
 
-/* ============ BROWSE ============ */
+/* ============ BROWSE ============
+ * Filters have to answer three questions at a glance: how many of your recipes
+ * you are looking at, what is doing the narrowing, and how to undo any one part
+ * of it. The old page answered none of them — the count was always the total and
+ * the only way back was resetting three dropdowns one at a time.
+ */
+const QUICK_FILTERS = [
+  { key:'never',   label:'Never cooked', test:r => !r.timesCooked },
+  { key:'unrated', label:'Unrated',      test:r => !r.ratings.length },
+  { key:'nophoto', label:'No photo',     test:r => !(r.images||[]).length },
+  { key:'quick',   label:'Under 30 min', test:r => { const t=totalMinutes(r); return t>0 && t<=30; } },
+];
+const SORTS = [
+  { key:'newest',     label:'Newest first' },
+  { key:'oldest',     label:'Oldest first' },
+  { key:'az',         label:'A → Z' },
+  { key:'za',         label:'Z → A' },
+  { key:'mostUsed',   label:'Most cooked' },
+  { key:'topRated',   label:'Highest rated' },
+  { key:'lastCooked', label:'Recently cooked' },
+  { key:'time',       label:'Quickest first' },
+  { key:'relevant',   label:'Most relevant' },
+];
+function quickOn(key){ return state.quickFilters.includes(key); }
+function toggleQuick(key){
+  state.quickFilters = quickOn(key)
+    ? state.quickFilters.filter(k=>k!==key)
+    : [...state.quickFilters, key];
+  renderMain();
+}
+function setBookFilter(v){ state.bookFilter=v; renderMain(); }
+function setBrowseView(v){ state.browseView=v; renderMain(); }
+/** Sort by a column heading. Clicking the active column flips it. */
+function sortByColumn(key){
+  const flip={ az:'za', za:'az', newest:'oldest', oldest:'newest' };
+  state.sortBy = (state.sortBy===key && flip[key]) ? flip[key] : key;
+  renderMain();
+}
+function clearBrowseFilters(){
+  state.searchQuery=''; state.categoryFilter='all'; state.bookFilter='all';
+  state.quickFilters=[];
+  if(state.sortBy==='relevant') state.sortBy='newest';
+  renderMain();
+}
+const browseFiltered = () => filteredSorted();
+/** True when something is hiding recipes. Sort is deliberately not counted —
+ *  reordering a list is not the same as narrowing it. */
+function browseFilterCount(){
+  return (state.searchQuery.trim()?1:0) + (state.categoryFilter!=='all'?1:0)
+       + (state.bookFilter!=='all'?1:0) + state.quickFilters.length;
+}
+function bookFilterLabel(){
+  if(state.bookFilter==='none') return 'Not from a book';
+  if(state.bookFilter==='any')  return 'From any cookbook';
+  const b=bookById(state.bookFilter);
+  return b?b.title:'Cookbook';
+}
+function renderActiveFilters(){
+  if(!browseFilterCount()) return '';
+  const chip=(label,clear)=>`<span class="fchip">${esc(label)}
+    <button title="Remove this filter" onclick="${clear}">×</button></span>`;
+  return `<div class="activerow no-print">
+    <span class="lab">Filtering by</span>
+    ${state.searchQuery.trim()?chip(`“${state.searchQuery.trim()}”`,`state.searchQuery='';renderMain()`):''}
+    ${state.categoryFilter!=='all'?chip(state.categoryFilter,`state.categoryFilter='all';renderMain()`):''}
+    ${state.bookFilter!=='all'?chip(bookFilterLabel(),`setBookFilter('all')`):''}
+    ${state.quickFilters.map(k=>{
+      const q=QUICK_FILTERS.find(x=>x.key===k);
+      return q?chip(q.label,`toggleQuick('${k}')`):'';
+    }).join('')}
+    <button class="clearall" onclick="clearBrowseFilters()">✕ Clear all</button>
+  </div>`;
+}
 function viewBrowse(){
-  const list=filteredSorted();
+  const list=browseFiltered();
+  const filtering=browseFilterCount()>0;
+  const linked=recipes.filter(r=>r.cookbookId).length;
   return `
-    <h1 class="title">Recipes</h1>
-    <p class="subtle">${recipes.length} recipes in your pantry</p>
-    <div class="controls">
+    <div class="browse-head">
+      <h1 class="title">Recipes</h1>
+      <span class="result-count">${filtering
+        ? `<b>${list.length}</b> of ${recipes.length} shown`
+        : `<b>${recipes.length}</b> recipe${recipes.length===1?'':'s'}`}</span>
+      <div class="right no-print">
+        <div class="viewtog">
+          <button class="${state.browseView==='list'?'':'on'}" onclick="setBrowseView('grid')">▦ Grid</button>
+          <button class="${state.browseView==='list'?'on':''}" onclick="setBrowseView('list')">☰ List</button>
+        </div>
+        <button class="icon-btn primary" onclick="startAddRecipe()">+ Add Recipe</button>
+      </div>
+    </div>
+
+    <div class="controls no-print">
       <div class="search-wrap"><span class="sicon">🔍</span>
-        <input id="searchInput" type="text" placeholder="Search by name, ingredient, category, tag, or cookbook..." value="${escA(state.searchQuery)}" oninput="onSearch(this)"></div>
+        <input id="searchInput" type="text" placeholder="Search by name, ingredient, category, tag, or cookbook..."
+          value="${escA(state.searchQuery)}" oninput="onSearch(this)"></div>
       <select onchange="state.categoryFilter=this.value; renderMain();">
-        <option value="all">All Categories</option>
+        <option value="all">All categories</option>
         ${allCategories.map(c=>`<option value="${escA(c)}" ${state.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}
       </select>
+      <select onchange="setBookFilter(this.value)">
+        <option value="all">All cookbooks</option>
+        <option value="any"  ${state.bookFilter==='any'?'selected':''}>— From any cookbook (${linked}) —</option>
+        <option value="none" ${state.bookFilter==='none'?'selected':''}>— Not from a book (${recipes.length-linked}) —</option>
+        ${cookbooks.map(b=>`<option value="${b.id}" ${state.bookFilter===b.id?'selected':''}>${esc(b.title)}</option>`).join('')}
+      </select>
       <select onchange="state.sortBy=this.value; renderMain();">
-        <option value="newest" ${state.sortBy==='newest'?'selected':''}>Newest to Oldest</option>
-        <option value="oldest" ${state.sortBy==='oldest'?'selected':''}>Oldest to Newest</option>
-        <option value="relevant" ${state.sortBy==='relevant'?'selected':''}>Most Relevant</option>
-        <option value="mostUsed" ${state.sortBy==='mostUsed'?'selected':''}>Most Used (times cooked)</option>
-        <option value="topRated" ${state.sortBy==='topRated'?'selected':''}>Highest Rated</option>
+        ${SORTS.map(s=>`<option value="${s.key}" ${state.sortBy===s.key?'selected':''}>${s.label}</option>`).join('')}
       </select>
     </div>
-    ${list.length===0?`<div class="empty">No recipes match your search/filters.</div>`:`
-    <div class="grid">${list.map(recipeCard).join('')}</div>`}`;
+
+    <div class="quickrow no-print">
+      ${QUICK_FILTERS.map(q=>{
+        const n=recipes.filter(q.test).length;
+        return `<button class="qchip ${quickOn(q.key)?'on':''}" onclick="toggleQuick('${q.key}')">
+          ${q.label} <span class="n">${n}</span></button>`;
+      }).join('')}
+    </div>
+
+    ${renderActiveFilters()}
+
+    ${list.length===0
+      ? `<div class="empty">${filtering
+          ? `Nothing matches those filters.<br>
+             <button class="icon-btn sm no-print" style="margin-top:14px;" onclick="clearBrowseFilters()">✕ Clear all filters</button>`
+          : 'No recipes yet. Add your first one and it shows up here.'}</div>`
+      : state.browseView==='list'
+        ? renderRecipeList(list)
+        : `<div class="grid">${list.map(recipeCard).join('')}</div>`}`;
 }
+
+/* ---- the list view ----
+ * A collection without photos spends most of a grid card on an empty panel.
+ * The list fits roughly three times as many recipes on a screen and has room
+ * for the two things a card never did: how long it takes and when you last
+ * made it.
+ */
+const LIST_COLS = [
+  { key:null,         label:'',           cls:'' },
+  { key:'az',         label:'Recipe',     cls:'' },
+  { key:null,         label:'From',       cls:'col-from' },
+  { key:'time',       label:'Time',       cls:'col-time num' },
+  { key:'topRated',   label:'Rating',     cls:'col-rating' },
+  { key:'mostUsed',   label:'Cooked',     cls:'num' },
+  { key:'lastCooked', label:'Last made',  cls:'col-last num' },
+  { key:null,         label:'',           cls:'' },
+];
+function sortArrow(key){
+  if(key==='az'  && state.sortBy==='az')  return ' ↑';
+  if(key==='az'  && state.sortBy==='za')  return ' ↓';
+  return state.sortBy===key ? ' ↓' : '';
+}
+function renderRecipeList(list){
+  return `<div class="rlist">
+    <div class="rl-head">
+      ${LIST_COLS.map(c=>c.key
+        ? `<button class="sortable ${['az','za'].includes(state.sortBy)&&c.key==='az'||state.sortBy===c.key?'on':''} ${c.cls}"
+             onclick="sortByColumn('${c.key}')">${c.label}${sortArrow(c.key)}</button>`
+        : `<span class="${c.cls}">${c.label}</span>`).join('')}
+    </div>
+    ${list.map(r=>{
+      const b=r.cookbookId?bookById(r.cookbookId):null;
+      const t=totalMinutes(r);
+      const last=agoLabel(r.lastCookedAt);
+      return `<div class="rl-row" onclick="openRecipe('${r.id}')">
+        <span class="rl-emoji">${r.emoji}</span>
+        <span style="min-width:0;">
+          <span class="rl-title">${esc(r.title)}</span>
+          <div class="rl-cats">${r.categories.map(esc).join(' · ')}</div></span>
+        <span class="rl-src col-from">${b?`${b.emoji} ${esc(b.title)}`:'—'}</span>
+        <span class="rl-num col-time">${t?esc(fmtTotal(t)):'—'}</span>
+        <span class="col-rating">${r.ratings.length
+          ? `<span class="rl-stars">${starString(avgRating(r))}</span>
+             <span class="rl-count">(${r.ratings.length})</span>`
+          : `<span class="unrated">unrated</span>`}</span>
+        <span class="rl-num">${r.timesCooked}×</span>
+        <span class="rl-num col-last">${last?esc(last[1]?`${last[0]} ${last[1].toLowerCase()}`:last[0]):'—'}</span>
+        <button class="rl-x no-print" title="Remove recipe"
+          onclick="event.stopPropagation(); confirmDeleteRecipe('${r.id}')">×</button>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
 /* The source book on a card. Skipped on a cookbook's own page, where every
    card would repeat the same book name back at you. */
 function cardSourceLine(r){
@@ -1398,6 +1636,7 @@ function cardSourceLine(r){
 }
 
 function recipeCard(r){
+  const t=totalMinutes(r);
   return `<div class="rcard" onclick="openRecipe('${r.id}')">
     <button class="card-del no-print" title="Remove recipe" onclick="event.stopPropagation(); confirmDeleteRecipe('${r.id}')">×</button>
     <div class="thumb">${coverImage(r)
@@ -1408,8 +1647,11 @@ function recipeCard(r){
       <h3>${esc(r.title)}</h3>
       ${cardSourceLine(r)}
       <div class="rmeta">
-        <span class="stars">${r.ratings.length?starString(avgRating(r)):'☆☆☆☆☆'} ${r.ratings.length?`(${r.ratings.length})`:''}</span>
-        <span>👨‍🍳 ${r.timesCooked}×</span>
+        ${/* five empty stars read as "rated zero"; nobody rating it is a different thing */''}
+        <span class="stars">${r.ratings.length
+          ? `${starString(avgRating(r))} <span class="rl-count">(${r.ratings.length})</span>`
+          : `<span class="unrated">unrated</span>`}</span>
+        <span>${t?`${esc(fmtTotal(t))} · `:''}👨‍🍳 ${r.timesCooked}×</span>
       </div>
     </div>
   </div>`;

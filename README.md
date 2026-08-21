@@ -238,6 +238,32 @@ to find its ambiguous mentions, so the two can never disagree about which occurr
 
 ---
 
+## The browse pages
+
+Filters have to answer three questions at once: how many of your recipes you are looking at, what is
+narrowing them, and how to undo one part of it. `renderActiveFilters()` draws a chip per active filter,
+each removable on its own, with a clear-all beside them.
+
+**Sort is deliberately not a filter.** It gets no chip and `browseFilterCount()` ignores it, because
+reordering a list is not the same as hiding things from it. Adding sort to that row would make "Clear
+all" mean two different things.
+
+Quick filters (`QUICK_FILTERS`) are predicates over a recipe and stack with everything else — all of
+them must pass. Their counts are computed against the whole collection, not the filtered view, so a
+chip always tells you how many exist rather than how many survive the other filters.
+
+**The list view earns its keep on a phone, not a desktop.** Measured on 22 recipes: at 1440px the grid
+runs 1,576px and the list 1,350px, a 14% saving. At 430px the grid collapses to one column and runs
+5,623px while the list stays 1,346px — 76% shorter. Grid is the default; the toggle is session state.
+Narrow screens drop list columns rather than squeezing all eight.
+
+**Cookbook covers are 3:4.** A book is portrait, and the old landscape thumbnail cropped a real cover
+through the middle. Books with no photo get one of the cloth tones from the home-page shelf; those
+selectors are written `.bcov.toneA` rather than `.toneA` so they outrank the hatched fallback on
+`.bcard .bcov` instead of quietly losing the specificity contest.
+
+---
+
 ## The edit forms
 
 Save and Cancel live in a sticky bar at the top. Fields are capped at a readable width, grouped into
@@ -265,7 +291,7 @@ anything is added.
 
 ---
 
-## Four details that are easy to break
+## Six details that are easy to break
 
 **Calendar days come from the browser, not the server.** The Worker's clock is UTC. Stamp a
 cook's day from it and a meal cooked at 7pm in Chicago is filed under tomorrow — logged, but
@@ -273,6 +299,15 @@ on the wrong square. So the browser sends its own local date with every cook and
 Worker sanity-checks it (`localDay()` in `src/index.js`), and every day-key on the client is
 built from `localDay()` rather than `toISOString()`. If you ever reach for
 `toISOString().slice(0,10)` to get "today", you have just reintroduced this bug.
+
+**"Unrated" and "rated zero" must not look alike.** Cards used to render `☆☆☆☆☆` for a recipe nobody
+had rated, which reads as a one-star-out-of-five verdict rather than an absence. Unrated now says so in
+words. If you ever collapse that back into a star row, fourteen of twenty-two recipes start looking
+like failures again.
+
+**A hover-only control does not exist on a phone.** The delete × on a card was `opacity:0` until
+`:hover`, which is unreachable without a mouse. It is now visible at reduced opacity under
+`@media (hover:none)`. Any new hover-revealed affordance needs the same treatment.
 
 **Printing needs both tab panels in the DOM.** A print stylesheet can only hide what is already on
 the page. The recipe page used to render just the open tab, so printing from Ingredients gave you a
