@@ -6,9 +6,11 @@
  *   POST   /api/recipes              create
  *   PUT    /api/recipes/:id          update
  *   DELETE /api/recipes/:id          delete (cascades)
- *   POST   /api/recipes/:id/cook     increment cook counter + log the cook
+ *   POST   /api/recipes/:id/cook     log a cook, dated today
+ *   POST   /api/recipes/:id/cook-dates  log a cook you forgot, on a given day
+ *   DELETE /api/cook-events/:id      remove one cook from the record
  *                                    body: {day} — the cook's LOCAL date
- *   POST   /api/recipes/:id/ratings  add rating + increment cook counter
+ *   POST   /api/recipes/:id/ratings  add rating + log the cook it implies
  *   PATCH  /api/recipes/:id/notes    save just the notes (see the warning on PUT below)
  *   POST   /api/recipes/:id/photos   upload photo -> R2
  *   DELETE /api/photos/:id           delete photo (promotes a new cover if needed)
@@ -264,7 +266,10 @@ async function loadRecipes(db) {
       title: r.title,
       emoji: r.emoji,
       baseServings: r.base_servings,
-      timesCooked: r.times_cooked,
+      // filled in by bootstrap() from cook_events; the times_cooked column is
+      // dead weight kept only so an older deploy rolling back still reads
+      timesCooked: 0,
+      cookDates: [],
       dateAdded: r.date_added,
       notes: r.notes || '',
       cookbookId: r.cookbook_id || null,
@@ -332,30 +337,41 @@ async function loadCookbooks(db) {
 
 async function bootstrap(db) {
   const since = dayKey(Date.now() - 400 * 86400000);   // a full year of history, plus slack
-  const [recipes, subs, shopping, cats, cookbooks, activity, lastCooked, cookMonths, emoji] = await Promise.all([
+  const [recipes, subs, shopping, cats, cookbooks, cooks, emoji] = await Promise.all([
     loadRecipes(db),
     db.prepare('SELECT * FROM substitutions ORDER BY ingredient').all(),
     db.prepare('SELECT * FROM shopping_items ORDER BY created_at').all(),
     db.prepare('SELECT name FROM categories ORDER BY name').all(),
     loadCookbooks(db),
-    db.prepare(`SELECT cooked_on AS day, COUNT(*) AS n FROM cook_events
-                WHERE cooked_on >= ? GROUP BY cooked_on`).bind(since).all(),
-    db.prepare(`SELECT recipe_id, MAX(cooked_at) AS last FROM cook_events GROUP BY recipe_id`).all(),
-    // per-recipe monthly counts, for the little frequency bar on a recipe page
-    db.prepare(`SELECT recipe_id, substr(cooked_on,1,7) AS month, COUNT(*) AS n
-                FROM cook_events GROUP BY recipe_id, month`).all(),
+    // Every cook, once. The calendar, the streak, the per-recipe count, the
+    // monthly bars and the editable list of dates are all views of this one
+    // table — which is the whole point: they can no longer disagree.
+    db.prepare(`SELECT id, recipe_id, cooked_at, cooked_on
+                  FROM cook_events ORDER BY cooked_at DESC`).all(),
     loadEmojiPalette(db),
   ]);
-  const lastById = new Map(lastCooked.results.map(r => [r.recipe_id, r.last]));
-  const monthsById = new Map();
-  for (const row of cookMonths.results) {
-    if (!monthsById.has(row.recipe_id)) monthsById.set(row.recipe_id, {});
-    monthsById.get(row.recipe_id)[row.month] = row.n;
+
+  const perDay = new Map();
+  const byRecipe = new Map();
+  for (const c of cooks.results) {
+    if (c.cooked_on >= since) perDay.set(c.cooked_on, (perDay.get(c.cooked_on) || 0) + 1);
+    if (!byRecipe.has(c.recipe_id)) byRecipe.set(c.recipe_id, []);
+    byRecipe.get(c.recipe_id).push(c);
   }
   for (const r of recipes) {
-    r.lastCookedAt = lastById.get(r.id) || null;
-    r.cookMonths = monthsById.get(r.id) || {};
+    const mine = byRecipe.get(r.id) || [];       // already newest first
+    // the count IS the number of dated cooks — there is no separate integer
+    r.timesCooked = mine.length;
+    r.lastCookedAt = mine.length ? mine[0].cooked_at : null;
+    r.cookMonths = {};
+    for (const c of mine) {
+      const m = c.cooked_on.slice(0, 7);
+      r.cookMonths[m] = (r.cookMonths[m] || 0) + 1;
+    }
+    // what the edit page lets you remove, one row per meal
+    r.cookDates = mine.map(c => ({ id: c.id, day: c.cooked_on, at: c.cooked_at }));
   }
+  const activity = { results: [...perDay.entries()].map(([day, n]) => ({ day, n })) };
 
   const globalSubs = [];
   const localByRecipe = new Map();
@@ -430,19 +446,18 @@ async function saveRecipe(db, body, existingId) {
     ).bind(title, emoji, baseServings, notes, cookbookId, cookbookPage,
            prepMinutes, cookMinutes, ts, id).run();
 
-    if (body.timesCooked !== undefined && body.timesCooked !== null) {
-      const n = Math.max(0, Math.round(Number(body.timesCooked)));
-      if (Number.isFinite(n)) {
-        await db.prepare('UPDATE recipes SET times_cooked=? WHERE id=?').bind(n, id).run();
-      }
-    }
+    // body.timesCooked is deliberately ignored. How many times you cooked
+    // something is the number of cooks on record, not a field — see
+    // migrations/009-cook-dates.sql. The edit form adds and removes dates instead.
   } else {
     await db.prepare(
       `INSERT INTO recipes (id,title,emoji,base_servings,times_cooked,date_added,
                             notes,cookbook_id,cookbook_page,prep_minutes,cook_minutes,
                             created_at,updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).bind(id, title, emoji, baseServings, body.timesCooked || 0, dateAdded,
+      // a new recipe has been cooked zero times, whatever the body claims: the
+      // count comes from cook_events and there are none yet
+    ).bind(id, title, emoji, baseServings, 0, dateAdded,
            notes, cookbookId, cookbookPage, prepMinutes, cookMinutes, ts, ts).run();
   }
 
@@ -938,12 +953,23 @@ export default {
         if (sub === '/cook' && method === 'POST') {
           const ts = now();
           const day = localDay(await readJson(request), request, ts);
-          await db.batch([
-            db.prepare('UPDATE recipes SET times_cooked = times_cooked + 1, updated_at=? WHERE id=?')
-              .bind(ts, id),
-            logCook(db, id, ts, day, 'button'),
-          ]);
+          // one write, not two: the log IS the count now
+          await logCook(db, id, ts, day, 'button').run();
           return json(await bootstrap(db));
+        }
+
+        /* Adding a cook you forgot to log at the time, and removing one that
+           should not be there. Both operate on the log directly, because the
+           log is the only record there is. */
+        if (sub === '/cook-dates' && method === 'POST') {
+          const b = await readJson(request);
+          const day = String(b.day || '').trim();
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return err('Give a date as YYYY-MM-DD.');
+          const stamp = Date.parse(day + 'T12:00:00Z');
+          if (!Number.isFinite(stamp)) return err('That is not a real date.');
+          if (stamp > now() + 86400000) return err('That day has not happened yet.');
+          await logCook(db, id, stamp, day, 'manual').run();
+          return json(await bootstrap(db), 201);
         }
 
         if (sub === '/ratings' && method === 'POST') {
@@ -955,8 +981,6 @@ export default {
             db.prepare(`INSERT INTO ratings (id,recipe_id,stars,comment,date,created_at)
                         VALUES (?,?,?,?,?,?)`)
               .bind(uid(), id, stars, String(body.comment || '').trim(), day, ts),
-            db.prepare('UPDATE recipes SET times_cooked = times_cooked + 1, updated_at=? WHERE id=?')
-              .bind(ts, id),
             logCook(db, id, ts, day, 'rating'),
           ]);
           return json(await bootstrap(db), 201);
@@ -1226,6 +1250,18 @@ export default {
 
       if (path === '/api/shopping/clear-checked' && method === 'POST') {
         await db.prepare('DELETE FROM shopping_items WHERE checked=1').run();
+        return json(await bootstrap(db));
+      }
+
+      /* Removing one cook. There is no counter to keep in step — deleting the
+         row is the whole operation, and the recipe's count drops by one
+         because the count is the rows. */
+      const cookMatch = path.match(/^\/api\/cook-events\/([^/]+)$/);
+      if (cookMatch && method === 'DELETE') {
+        const found = await db.prepare('SELECT id FROM cook_events WHERE id=?')
+          .bind(cookMatch[1]).first();
+        if (!found) return err('That cook is not on record', 404);
+        await db.prepare('DELETE FROM cook_events WHERE id=?').bind(cookMatch[1]).run();
         return json(await bootstrap(db));
       }
 
