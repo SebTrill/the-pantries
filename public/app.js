@@ -637,6 +637,54 @@ function renderMain(){
 }
 
 /* ============ HOME ============ */
+/* ============ WHAT THE HOME PAGE HAS EARNED ============
+ * Every section on the home page claims something: a ranking, a distribution,
+ * a habit, a shelf. A claim needs enough behind it to be true, and this page
+ * was built for a collection ten times the size of a new one — so at four
+ * recipes it drew a leaderboard of four, a bar chart whose top bar was every
+ * recipe, a six-month trend with five empty months, and a "Most Cooked" list
+ * whose second and third places had been cooked zero times.
+ *
+ * One rule instead of four patches: a section does not draw until it can say
+ * something true. Nothing announces itself as missing — sections simply appear
+ * when the collection has earned them.
+ *
+ * Each predicate is named for the claim it guards, so the rules can be read
+ * together and tested from both sides.
+ */
+function cookedRecipes(){ return recipes.filter(r => r.timesCooked > 0); }
+function distinctCookDays(){ return new Set((activity||[]).map(a => a.day)).size; }
+function categoryCounts(){
+  const c = new Map();
+  recipes.forEach(r => r.categories.forEach(x => c.set(x, (c.get(x)||0) + 1)));
+  return c;
+}
+const HOME_EARNED = {
+  // a ranking needs something to rank: three recipes actually cooked
+  mostCooked: () => cookedRecipes().length >= 3,
+  // a distribution needs categories that divide the collection. Four bars where
+  // the tallest is every recipe you own is not a distribution.
+  categories: () => {
+    const c = categoryCounts();
+    return c.size >= 3 && Math.max(0, ...c.values()) < recipes.length;
+  },
+  // below this a leaderboard is the recipe list with numbers on it
+  top10:     () => recipes.length >= 8,
+  // your call: the calendar appears as soon as there is anything to draw on it
+  activity:  () => distinctCookDays() >= 1,
+  // one book is not a shelf
+  shelf:     () => cookbooks.length >= 2,
+  // your call: one rating is enough for the card to appear
+  avgRating: () => ratedRecipes().length >= 1,
+  /* A tidy-up queue is a few things needing attention. When every recipe you
+     own is on it, it has stopped being a queue and started being a verdict on
+     the collection — so it waits until it is a subset. */
+  tidy: () => { const n = tidyItems().length; return n > 0 && n < recipes.length; },
+};
+/** A six-month sparkline drawn over five empty months is five stubs and a
+ *  block — it reads as a rendering fault rather than a trend. */
+const sparkEarned = values => values.filter(v => v > 0).length >= 2;
+
 /* ---------- collapsible sections ----------
  * Folding a section away is a decluttering move for the session you're in, not
  * a preference. It lives in memory only — no storage, no cookie — so opening
@@ -664,8 +712,13 @@ function sideHead(key, title, sub){
     ${off?'':`<div class="side-sub">${sub}</div>`}`;
 }
 
+/* Only recipes that have actually been cooked. It used to sort everything and
+   take the top three whatever the counts were, which handed rank ② and ③ to
+   recipes cooked zero times. */
 function mostCooked(n=3){
-  return recipes.slice().sort((a,b)=>b.timesCooked-a.timesCooked || avgRating(b)-avgRating(a)).slice(0,n);
+  return cookedRecipes()
+    .sort((a,b)=>b.timesCooked-a.timesCooked || avgRating(b)-avgRating(a))
+    .slice(0,n);
 }
 function topRanked(n=10){
   return recipes.slice().sort((a,b)=>
@@ -702,11 +755,31 @@ function lastSixMonthKeys(){
   }
   return out;
 }
+/* With one meal on record, "1 in the last 30 days" is a rate dressed up as a
+   fact. Say which meal it was — that is the thing worth knowing. */
+function firstCookLine(){
+  const all = recipes.filter(r => r.timesCooked > 0);
+  if(totalCooked() === 1 && all.length === 1){
+    const r = all[0];
+    const d = (r.cookDates && r.cookDates[0] && r.cookDates[0].day) || null;
+    return d ? `${esc(r.title)}, on ${prettyShortDay(d)}` : esc(r.title);
+  }
+  return `${cooksInLastDays(30)} in the last 30 days`;
+}
+function prettyShortDay(day){
+  const m = String(day||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return day||'';
+  return new Date(+m[1], +m[2]-1, +m[3])
+    .toLocaleDateString(undefined,{day:'numeric',month:'short'});
+}
 function cooksInLastDays(n){
   const cutoff = localDay(Date.now()-n*86400000);
   return (activity||[]).filter(a=>a.day>=cutoff).reduce((t,a)=>t+a.n,0);
 }
 function sparkBars(values){
+  // a trend needs at least two months with something in them; below that the
+  // chart is five minimum-height stubs and a block, which reads as a fault
+  if(!sparkEarned(values)) return '';
   const max = Math.max(1, ...values);
   return `<div class="k-spark">${values.map((v,i)=>
     `<i class="${i===values.length-1?'hi':''}" style="height:${Math.max(6, Math.round(v/max*100))}%"
@@ -718,20 +791,24 @@ function renderKpiRow(){
   const addedPerMonth = months.map(m=>recipes.filter(r=>monthKey(r.dateAdded)===m).length);
   const cooksPerMonth = months.map(m=>(activity||[]).filter(a=>monthKey(a.day)===m).reduce((t,a)=>t+a.n,0));
   const thisMonth = addedPerMonth[addedPerMonth.length-1];
+  // "+4 this month" is not news when the collection is four recipes old
+  const allAddedAtOnce = thisMonth === recipes.length && recipes.length > 0;
   const never = recipes.filter(r=>!r.timesCooked).length;
   const avg = overallAvg();
   return `<div class="kpi-row">
     <div class="kpi"><div class="k-label">Recipes</div>
       <div class="k-value">${recipes.length}</div>
-      <div class="k-sub">${thisMonth?`+${thisMonth} this month`:'none added this month'}</div>
+      <div class="k-sub">${allAddedAtOnce
+        ? 'all added this month'
+        : thisMonth?`+${thisMonth} this month`:'none added this month'}</div>
       ${sparkBars(addedPerMonth)}</div>
     <div class="kpi"><div class="k-label">Meals cooked</div>
       <div class="k-value">${totalCooked()}</div>
-      <div class="k-sub">${cooksInLastDays(30)} in the last 30 days</div>
+      <div class="k-sub">${firstCookLine()}</div>
       ${sparkBars(cooksPerMonth)}</div>
-    <div class="kpi"><div class="k-label">Average rating</div>
+    ${HOME_EARNED.avgRating()?`<div class="kpi"><div class="k-label">Average rating</div>
       <div class="k-value">${avg?avg.toFixed(1):'—'}</div>
-      <div class="k-sub">${ratedRecipes().length} rated recipe${ratedRecipes().length===1?'':'s'}</div></div>
+      <div class="k-sub">${ratedRecipes().length} rated recipe${ratedRecipes().length===1?'':'s'}</div></div>`:''}
     <div class="kpi ${never?'kpi-nudge':''} ${never?'kpi-link':''}"
       ${never?`onclick="browseNeverCooked()" title="See them"`:''}>
       <div class="k-label">Never cooked</div>
@@ -768,31 +845,36 @@ function tonightReason(r){
     bits.push(days<1?'cooked today':days===1?'cooked yesterday':`last cooked ${days} days ago`);
   } else bits.push(`cooked ${r.timesCooked} time${r.timesCooked===1?'':'s'}`);
   const b = r.cookbookId ? bookById(r.cookbookId) : null;
-  if(b) bits.push(`from ${b.title}`);
-  return bits.join(' · ');
+  // you wrote the page down; this is the moment it saves you a search
+  if(b) bits.push(`from ${b.title}${r.cookbookPage?`, p. ${r.cookbookPage}`:''}`);
+  const line = bits.join(' · ');
+  return line ? line.charAt(0).toUpperCase() + line.slice(1) : '';
 }
-function renderTonight(){
+/* The answer to the question in the headline, sitting directly beneath it.
+ * This used to be the fifth block down the page, under the charts — the page
+ * asked what you were cooking and then made you scroll past a leaderboard to
+ * find out. */
+function renderTonightAnswer(){
   let r = recipes.find(x=>x.id===state.tonightId);
   if(!r){ pickTonight(); r = recipes.find(x=>x.id===state.tonightId); }
   if(!r) return '';
   const cover = coverImage(r);
   return `
-    ${secHead('tonight','🍽️ Cook this tonight',
-      `<button class="link" onclick="rerollTonight()">🎲 Roll again</button>`)}
-    ${isCollapsed('tonight')?'':`
-    <div class="tonight">
+    <div class="hero-answer">
       <div class="t-img" onclick="openRecipe('${r.id}')">${cover
         ? `<img src="${cover.url}" alt="${escA(r.title)}" style="${focalStyle(cover)}">`
         : r.emoji}</div>
-      <div style="min-width:0;">
-        <h3>${esc(r.title)}</h3>
+      <div style="min-width:0;flex:1;">
+        <div class="t-eyebrow">Tonight</div>
+        <h3 onclick="openRecipe('${r.id}')">${esc(r.title)}</h3>
         <div class="t-why">${esc(tonightReason(r))}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <div class="t-btns no-print">
           <button class="icon-btn primary" onclick="openRecipe('${r.id}')">Open recipe</button>
           <button class="icon-btn" onclick="addRecipeToShoppingList('${r.id}')">🛒 Add ingredients</button>
         </div>
       </div>
-    </div>`}`;
+      <button class="t-roll no-print" onclick="rerollTonight()">🎲 Roll again</button>
+    </div>`;
 }
 
 /* ---------- pantry matcher ---------- */
@@ -1055,38 +1137,38 @@ function viewHome(){
 
   return `
     <div class="home-hero">
-      <h1>What are you cooking today?</h1>
-      <p>${recipes.length} recipe${recipes.length===1?'':'s'} · ${globalSubs.length} substitutions ·
-         ${totalCooked()} meal${totalCooked()===1?'':'s'} cooked</p>
-      <div class="home-search">
-        <input id="homeSearch" type="text" placeholder="Search recipes by name, ingredient, cookbook, or tag..."
-          onkeydown="if(event.key==='Enter'){event.preventDefault();runHomeSearch();}">
-        <button class="icon-btn primary" onclick="runHomeSearch()">🔍 Search</button>
+      <div class="hero-ask">
+        <h1>What are you cooking today?</h1>
+        <p>${recipes.length} recipe${recipes.length===1?'':'s'}${
+          cookbooks.length?` · ${cookbooks.length} cookbook${cookbooks.length===1?'':'s'}`:''} ·
+          ${globalSubs.length} substitutions</p>
+        <div class="home-search">
+          <input id="homeSearch" type="text" placeholder="Search recipes by name, ingredient, cookbook, or tag..."
+            onkeydown="if(event.key==='Enter'){event.preventDefault();runHomeSearch();}">
+          <button class="icon-btn primary" onclick="runHomeSearch()">🔍 Search</button>
+        </div>
       </div>
+      ${renderTonightAnswer()}
     </div>
 
     ${renderKpiRow()}
 
     <div class="home-grid">
       <div>
-        <div class="home-sec">
+        ${HOME_EARNED.mostCooked()?`<div class="home-sec">
           ${secHead('mostCooked','🔥 Most Cooked',
             `<button class="link" onclick="clearBrowseFilters();state.sortBy='mostUsed';goto('browse')">See all →</button>`)}
           ${isCollapsed('mostCooked')?''
-            :cooked.length?`<div class="grid">${cooked.map((r,i)=>rankedCard(r,i)).join('')}</div>`
-            :`<div class="empty">Cook something and it'll show up here.</div>`}
-        </div>
+            :`<div class="grid">${cooked.map((r,i)=>rankedCard(r,i)).join('')}</div>`}
+        </div>`:''}
 
-        <div class="split-2">
-          <div>${renderPantry()}</div>
-          <div>${renderCategoryChart()}</div>
-        </div>
+        ${HOME_EARNED.categories()
+          ? `<div class="split-2"><div>${renderPantry()}</div><div>${renderCategoryChart()}</div></div>`
+          : renderPantry()}
 
-        ${renderTonight()}
-
-        ${renderActivity()}
-        ${renderShelf()}
-        ${renderTidy()}
+        ${HOME_EARNED.activity()?renderActivity():''}
+        ${HOME_EARNED.shelf()?renderShelf():''}
+        ${HOME_EARNED.tidy()?renderTidy():''}
       </div>
 
       <div>
@@ -1108,7 +1190,7 @@ function viewHome(){
           :`<div class="empty" style="padding:12px 0;font-size:13px;">No ratings yet.</div>`}
         </div>
 
-        <div class="side-card">
+        ${HOME_EARNED.top10()?`<div class="side-card">
           ${sideHead('top10','🏆 Top 10 Recipes','Ranked by rating, then times cooked')}
           ${isCollapsed('top10')?'':top.map((r,i)=>`
             <div class="top-item">
@@ -1120,7 +1202,7 @@ function viewHome(){
                 <div class="tmeta">${r.ratings.length?`★ ${avgRating(r).toFixed(1)} (${r.ratings.length})`:'unrated'} · 👨‍🍳 ${r.timesCooked}×</div>
               </div>
             </div>`).join('')}
-        </div>
+        </div>`:''}
       </div>
     </div>`;
 }
