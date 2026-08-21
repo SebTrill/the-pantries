@@ -135,6 +135,32 @@ function parseQty(input) {
   return matched ? total : 0;
 }
 
+/* ---------- macros ----------
+ * Six per-serving figures, in a fixed order that the API, the columns and the
+ * client all share, so none of them can drift out of step with the others.
+ */
+const MACRO_KEYS    = ['kcal', 'protein', 'fat', 'carbs', 'sugar', 'fiber'];
+const MACRO_COLUMNS = ['kcal', 'protein_g', 'fat_g', 'carbs_g', 'sugar_g', 'fiber_g'];
+
+/** null means "never filled in"; 0 means "none of it".
+ *
+ *  Everywhere else in this file a missing number falls back to 0 — for minutes
+ *  that is fine, because no recipe takes zero minutes, so 0 is free to stand
+ *  for silence. It is NOT fine here: a roast really does have 0 sugar and the
+ *  recipe page has to say so, while showing nothing at all for a figure that
+ *  was never entered. So `|| 0` is exactly the bug to avoid, and this returns
+ *  null rather than 0 for anything blank, absent or unparseable.
+ */
+function macroValue(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string' && v.trim() === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return null;
+  // 4 significant decimals is far past anything a kitchen cares about, and
+  // stops 6.199999999 coming back out of a float
+  return Math.min(Math.round(n * 10000) / 10000, 1e6);
+}
+
 /* ---------- shopping-list merging ----------
  * Two rows on a shopping list are the same purchase when they are the same
  * thing at the shop. "Lemons, Zested and Juiced" and "Lemon" are one purchase;
@@ -277,6 +303,11 @@ async function loadRecipes(db) {
       // 0 means "not recorded" — the client shows an em dash rather than "0 min"
       prepMinutes: r.prep_minutes || 0,
       cookMinutes: r.cook_minutes || 0,
+      // ...and here 0 means zero. `?? null` rather than `|| null`, because
+      // `0 || null` is null and that would erase every honest zero on the way
+      // out of the database.
+      macros: Object.fromEntries(MACRO_KEYS.map((k, i) =>
+        [k, r[MACRO_COLUMNS[i]] ?? null])),
       categories: [],
       tags: [],
       ingredients: [],
@@ -437,14 +468,16 @@ async function saveRecipe(db, body, existingId) {
   };
   const prepMinutes = minutes(body.prepMinutes);
   const cookMinutes = minutes(body.cookMinutes);
+  const macros = MACRO_KEYS.map(k => macroValue(body[k]));
 
   if (existingId) {
     await db.prepare(
       `UPDATE recipes SET title=?, emoji=?, base_servings=?, notes=?,
                           cookbook_id=?, cookbook_page=?, prep_minutes=?, cook_minutes=?,
+                          ${MACRO_COLUMNS.map(c => c + '=?').join(', ')},
                           updated_at=? WHERE id=?`
     ).bind(title, emoji, baseServings, notes, cookbookId, cookbookPage,
-           prepMinutes, cookMinutes, ts, id).run();
+           prepMinutes, cookMinutes, ...macros, ts, id).run();
 
     // body.timesCooked is deliberately ignored. How many times you cooked
     // something is the number of cooks on record, not a field — see
@@ -453,12 +486,13 @@ async function saveRecipe(db, body, existingId) {
     await db.prepare(
       `INSERT INTO recipes (id,title,emoji,base_servings,times_cooked,date_added,
                             notes,cookbook_id,cookbook_page,prep_minutes,cook_minutes,
+                            ${MACRO_COLUMNS.join(',')},
                             created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,${MACRO_COLUMNS.map(() => '?').join(',')},?,?)`
       // a new recipe has been cooked zero times, whatever the body claims: the
       // count comes from cook_events and there are none yet
     ).bind(id, title, emoji, baseServings, 0, dateAdded,
-           notes, cookbookId, cookbookPage, prepMinutes, cookMinutes, ts, ts).run();
+           notes, cookbookId, cookbookPage, prepMinutes, cookMinutes, ...macros, ts, ts).run();
   }
 
   const catIds = await categoryIds(db, body.categories || []);
@@ -710,7 +744,35 @@ function mapLdRecipe(node, sourceUrl) {
     baseServings: servings,
     categories: toList(node.recipeCategory).slice(0, 3).map(titleCase),
     tags: toList(node.keywords).slice(0, 6).map(titleCase),
+    macros: mapLdNutrition(node.nutrition),
     sourceUrl,
+  };
+}
+
+/* schema.org publishes nutrition as free text with the unit baked into the
+   string — "284 calories", "6.2 g", "11g", sometimes just "11". Pull the number
+   out and leave anything unreadable as null, which the form then shows as blank
+   rather than as a confident zero.
+
+   Everything here is already per serving: schema.org defines
+   NutritionInformation as the values for one servingSize. That happens to be
+   exactly what this app stores, so nothing needs converting. */
+function mapLdNutrition(n) {
+  const empty = Object.fromEntries(MACRO_KEYS.map(k => [k, null]));
+  if (!n || typeof n !== 'object') return empty;
+  const num = v => {
+    const m = String(firstString(v) ?? '').match(/-?\d+(\.\d+)?/);
+    if (!m) return null;
+    const x = Number(m[0]);
+    return Number.isFinite(x) && x >= 0 ? x : null;
+  };
+  return {
+    kcal:    num(n.calories),
+    protein: num(n.proteinContent),
+    fat:     num(n.fatContent),
+    carbs:   num(n.carbohydrateContent),
+    sugar:   num(n.sugarContent),
+    fiber:   num(n.fiberContent),
   };
 }
 

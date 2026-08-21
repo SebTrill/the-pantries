@@ -1151,6 +1151,70 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
 .cookadd input[type=date]:focus{outline:none;border-color:var(--ochre);
   box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
 
+/* ---------- macros ----------
+ * Two numeric columns: what you eat, and what the pan holds. The left one
+ * never moves when you scale the recipe — doubling it makes twice as much
+ * food, not richer food — so only the right column is marked as scaled. */
+.macros{border:1px solid var(--rule);border-radius:var(--radius);background:var(--panel);
+  overflow:hidden;margin-top:14px}
+.macros-head{display:flex;align-items:center;gap:9px;padding:12px 16px 11px;
+  border-bottom:1px solid var(--rule)}
+.macros-head h3{font-family:var(--display);font-size:12.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ochre);margin:0;font-weight:400}
+.scalepill{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+  background:var(--swap);border:1px solid var(--swap-line);color:var(--ochre);
+  border-radius:20px;padding:3px 9px}
+.colhead{display:flex;padding:7px 16px 6px;border-bottom:1px solid var(--rule);
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--faint)}
+.colhead .a{margin-left:auto;width:92px;text-align:right}
+.colhead .b{width:104px;text-align:right}
+/* the scaled highlight has to outrank the quieter styling on nested rows,
+   or an 'of which' line stays grey while everything around it is marked */
+.colhead .b.on,.mrow .b.on,.mkcal .b.on,.mrow.sub .b.on{color:var(--ochre)}
+.mkcal{display:flex;align-items:baseline;padding:12px 16px;border-bottom:1px solid var(--rule-soft)}
+.mkcal .nm{font-family:var(--display);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint)}
+.mkcal .a{margin-left:auto;width:92px;text-align:right;font-family:var(--display);font-size:26px;
+  color:var(--paper);line-height:1}
+.mkcal .b{width:104px;text-align:right;font-family:var(--mono);font-size:14px;color:var(--dim)}
+.mrow{display:flex;align-items:baseline;padding:9px 16px;font-size:15px;
+  border-bottom:1px dashed var(--rule-soft)}
+.mrow:last-child{border-bottom:none}
+.mrow .nm{color:var(--cream)}
+.mrow .a{margin-left:auto;width:92px;text-align:right;font-family:var(--mono);font-size:13.5px;
+  color:var(--paper)}
+.mrow .b{width:104px;text-align:right;font-family:var(--mono);font-size:13.5px;color:var(--dim)}
+/* sugar and fiber are part of the carbs above them, and read as such */
+.mrow.sub{padding-left:32px;font-size:14px}
+.mrow.sub .nm,.mrow.sub .a,.mrow.sub .b{color:var(--dim)}
+.mbar{height:4px;border-radius:3px;background:var(--raise);overflow:hidden;display:flex;
+  margin:12px 16px 0}
+.mbar i{display:block;height:100%}
+.mbar .p,.mbarkey .p{background:var(--brick)}
+.mbar .f,.mbarkey .f{background:var(--ochre)}
+.mbar .c,.mbarkey .c{background:var(--olive)}
+.mbarkey{display:flex;gap:14px;flex-wrap:wrap;padding:9px 16px 12px;font-family:var(--mono);
+  font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);
+  border-bottom:1px solid var(--rule-soft)}
+.mbarkey span{display:flex;align-items:center;gap:5px}
+.mbarkey i{width:8px;height:8px;border-radius:2px;display:inline-block}
+
+/* the six boxes on the form */
+.mgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;max-width:660px}
+.inwrap{position:relative;display:block}
+.inwrap input{width:100%;padding:10px 44px 10px 12px;border-radius:var(--radius);
+  border:1px solid var(--rule);background:var(--ground);color:var(--cream);
+  font-family:var(--mono);font-size:14px}
+.inwrap input:focus{outline:none;border-color:var(--ochre);
+  box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
+.inwrap .un{position:absolute;right:12px;top:50%;transform:translateY(-50%);
+  font-family:var(--mono);font-size:10px;color:var(--faint);pointer-events:none}
+.mnote{font-size:13px;color:var(--dim);font-style:italic;margin-top:15px;padding-top:13px;
+  border-top:1px dashed var(--rule-soft);max-width:640px;line-height:1.6}
+.mnote b{color:var(--ochre);font-weight:400;font-style:normal}
+@media (max-width:600px){.mgrid{grid-template-columns:repeat(2,1fr)}}
+
 /* ---------- emoji palette ---------- */
 .emoji-pick{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
 .epick{width:34px;height:34px;border-radius:var(--radius);border:1px solid var(--rule);

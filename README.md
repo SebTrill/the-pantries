@@ -385,6 +385,15 @@ two rows' buttons, so a click meant for the row underneath landed on this row's 
 
 Migration `migrations/008-shopping.sql` adds `sources` and `alt` and backfills from `from_recipe`.
 
+**Macros are nullable on purpose.** Six per-serving figures live on `recipes` as `kcal`,
+`protein_g`, `fat_g`, `carbs_g`, `sugar_g` and `fiber_g`, added by `migrations/010-macros.sql`.
+Everywhere else in this schema a missing number is 0 — no recipe takes zero minutes to prep, so 0 is
+free to mean "not recorded". Macros cannot borrow that trick: a roast really does have 0 g of sugar,
+and the recipe page has to show that while showing nothing at all for a figure nobody filled in. So
+`null` and `0` are different values here from the form to the page, `macroValue()` returns `null`
+rather than 0 for anything blank, and the read side uses `?? null` rather than `|| null` — because
+`0 || null` is `null`, which would erase every honest zero on the way out of the database.
+
 ---
 
 ## Six details that are easy to break
