@@ -16,6 +16,15 @@ CREATE TABLE IF NOT EXISTS recipes (
   cookbook_page TEXT NOT NULL DEFAULT '',
   prep_minutes  INTEGER NOT NULL DEFAULT 0,
   cook_minutes  INTEGER NOT NULL DEFAULT 0,
+  -- Macros, per serving. Deliberately nullable, unlike the minutes above:
+  -- 0 calories and 0 sugar are real answers that must show on the recipe,
+  -- so "not recorded" cannot be 0 here — it has to be NULL.
+  kcal          REAL,
+  protein_g     REAL,
+  fat_g         REAL,
+  carbs_g       REAL,
+  sugar_g       REAL,
+  fiber_g       REAL,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );

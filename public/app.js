@@ -498,6 +498,7 @@ const blankRecipeDraft = () => ({
   id:null,title:'',categories:['Dinner'],tags:[],dateAdded:localDay(),
   baseServings:4,emoji:'🍽️',ingredients:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],
   instructions:[''],ratings:[],timesCooked:0,cookDates:[],localSubs:[],images:[],
+  macros:{kcal:null,protein:null,fat:null,carbs:null,sugar:null,fiber:null},
   notes:'',cookbookId:null,cookbookPage:'',prepMinutes:0,cookMinutes:0,
 });
 const blankBookDraft = () => ({
@@ -1964,6 +1965,7 @@ function describeEditChanges(){
     // deleting a meal from the record is the least recoverable thing this form
     // does, so the warning has to name it rather than say "unsaved changes"
     if(!same('cookDates')) out.push(countLabel(was.cookDates||[], now.cookDates||[], 'cook date'));
+    cmp('macros','macros');
   } else {
     cmp('title','title'); cmp('author','author'); cmp('publisher','publisher');
     cmp('published','published'); cmp('edition','edition'); cmp('isbn','ISBN');
@@ -2241,6 +2243,111 @@ function moveIng(from,to){
   stashEditForm();
   const [item]=arr.splice(from,1); arr.splice(to,0,item);
   renderMain();
+}
+
+/* ============ MACROS ============
+ * Six per-serving figures. The order here is the order everywhere — the form,
+ * the panel, and the API's own list — so they cannot drift apart.
+ *
+ * The rule that shapes all of this: null is "never filled in" and 0 is "none
+ * of it". A blank figure is absent from the recipe page entirely; a zero is
+ * shown, because a roast really does have no sugar and that is worth saying.
+ * Which means `|| 0` and `|| '—'` are both wrong on this data, and the
+ * has-a-value test is `!= null` rather than truthiness.
+ */
+const MACROS = [
+  { key:'kcal',    label:'Calories', unit:'kcal', row:'Calories' },
+  { key:'protein', label:'Protein',  unit:'g',    row:'Protein'  },
+  { key:'fat',     label:'Fat',      unit:'g',    row:'Fat'      },
+  { key:'carbs',   label:'Carbs',    unit:'g',    row:'Carbs'    },
+  { key:'sugar',   label:'Sugar',    unit:'g',    row:'Sugar', under:'carbs' },
+  { key:'fiber',   label:'Fiber',    unit:'g',    row:'Fiber', under:'carbs' },
+];
+const hasMacro = (m, k) => m && m[k] != null;      // 0 counts; null and undefined do not
+function macroInputValue(m, k){
+  return (m && m[k] != null) ? String(m[k]) : '';
+}
+/** Read the six fields off the form. A blank box is null, not zero. */
+function readMacroFields(){
+  const out = {};
+  for (const m of MACROS){
+    const el = document.getElementById('f_' + m.key);
+    if (!el) continue;
+    const raw = el.value.trim();
+    if (raw === '') { out[m.key] = null; continue; }
+    const n = Number(raw);
+    out[m.key] = (Number.isFinite(n) && n >= 0) ? n : null;
+  }
+  return out;
+}
+/** Trim float noise without lying about precision.
+ *
+ *  Grams keep a decimal in BOTH columns. Rounding the batch column to whole
+ *  grams looked tidier and read as broken: 6.2 g per serving showed as 50 g
+ *  for eight and 99 g for sixteen, because 49.6 rounds up and 99.2 rounds
+ *  down. Doubling a recipe should visibly double the number. 49.6 and 99.2 do.
+ *
+ *  Calories are the exception — nobody wants 2,272.0 kcal — and they are large
+ *  enough that a whole number never distorts the doubling. */
+function fmtMacro(n, kcal){
+  if (n == null) return '';
+  const v = kcal ? Math.round(n) : Math.round(n * 10) / 10;
+  return v.toLocaleString(undefined, { maximumFractionDigits: kcal ? 0 : 1 });
+}
+function anyMacros(r){ return MACROS.some(m => hasMacro(r.macros, m.key)); }
+
+function renderMacros(r, mult){
+  if (!anyMacros(r)) return '';                    // nothing entered, nothing shown
+  const m = r.macros;
+  const servings = Number(r.baseServings) || 0;
+  // the batch column only exists if there is a serving count to multiply by
+  const batch = servings > 0 ? servings * mult : 0;
+  const scaled = mult !== 1;
+
+  // the split bar is a picture of the whole, so it needs all three parts
+  const canSplit = hasMacro(m,'protein') && hasMacro(m,'fat') && hasMacro(m,'carbs');
+  let bar = '';
+  if (canSplit){
+    // by calories, not grams — a gram of fat carries more than twice a gram of
+    // protein, so a gram split would draw a misleading picture
+    const kc = { protein: m.protein*4, fat: m.fat*9, carbs: m.carbs*4 };
+    const sum = kc.protein + kc.fat + kc.carbs;
+    if (sum > 0){
+      const pct = k => Math.round(kc[k] / sum * 100);
+      bar = `<div class="mbar">
+          <i class="p" style="width:${kc.protein/sum*100}%"></i>
+          <i class="f" style="width:${kc.fat/sum*100}%"></i>
+          <i class="c" style="width:${kc.carbs/sum*100}%"></i>
+        </div>
+        <div class="mbarkey">
+          <span><i class="p"></i>Protein ${pct('protein')}%</span>
+          <span><i class="f"></i>Fat ${pct('fat')}%</span>
+          <span><i class="c"></i>Carbs ${pct('carbs')}%</span>
+        </div>`;
+    }
+  }
+
+  const cell = k => batch
+    ? `<span class="b${scaled?' on':''}">${fmtMacro(m[k] * batch, k==='kcal')}${
+        k==='kcal'?'':' g'}</span>` : '';
+  const rows = MACROS.filter(x=>x.key!=='kcal' && hasMacro(m,x.key)).map(x=>{
+    // "of which" only makes sense with a carbs figure above it to be part of
+    const nested = x.under && hasMacro(m, x.under);
+    return `<div class="mrow${nested?' sub':''}">
+      <span class="nm">${nested?`of which ${x.row.toLowerCase()}`:esc(x.row)}</span>
+      <span class="a">${fmtMacro(m[x.key])} g</span>${cell(x.key)}</div>`;
+  }).join('');
+
+  return `<div class="macros">
+    <div class="macros-head"><h3>Macros</h3>${
+      scaled?`<span class="scalepill no-print">scaled ${mult===0.5?'½':mult}×</span>`:''}</div>
+    <div class="colhead"><span class="a">Per serving</span>${
+      batch?`<span class="b${scaled?' on':''}">All ${fmtMacro(batch, true)}</span>`:''}</div>
+    ${hasMacro(m,'kcal')?`<div class="mkcal"><span class="nm">Calories</span>
+      <span class="a">${fmtMacro(m.kcal)}</span>${cell('kcal')}</div>`:''}
+    ${bar}
+    ${rows}
+  </div>`;
 }
 
 /* ============ RECIPE DETAIL ============ */
@@ -2629,6 +2736,7 @@ function viewDetail(){
         ${renderIngredients(r,mult,applied)}
         <button class="icon-btn no-print" style="width:100%;margin-top:12px;"
           onclick="addRecipeToShoppingList('${r.id}')">🛒 Add all to shopping list</button>
+        ${renderMacros(r, mult)}
       </div>
       <div>
         <div class="col-tabs no-print" id="recipeTabs">
@@ -3046,6 +3154,7 @@ function duplicateRecipe(id){
   // you have not cooked the copy — those meals belong to the original, and
   // carrying the dates over would stage them for a second time on save
   copy.cookDates=[];
+  // macros describe the food, not the history, so a copy keeps them
   copy.ingredients=(copy.ingredients||[]).map(i=>({...i, id:uid()}));
   state.editing=copy; state.scanSource=null; state.scanImage=null;
   state.view='editRecipe';
@@ -3143,6 +3252,8 @@ function acceptImport(){
     tags:r.tags||[],
     ingredients:ings.length?ings:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],
     instructions:(r.instructions&&r.instructions.length)?r.instructions:[''],
+    // whatever the page published; anything it did not publish stays blank
+    macros:r.macros||{kcal:null,protein:null,fat:null,carbs:null,sugar:null,fiber:null},
     notes:src?`From ${src}`:'',
   };
   state.scanSource=null; state.scanImage=null;
@@ -3314,6 +3425,21 @@ function viewEditRecipe(){
     </div>
 
     <div class="fsec">
+      <h2>Macros <span class="hint">per serving · all optional</span></h2>
+      <div class="fsec-body">
+        <div class="mgrid">
+          ${MACROS.map(m=>`<div class="form-row" style="margin:0;"><label for="f_${m.key}">${m.label}</label>
+            <span class="inwrap"><input type="text" id="f_${m.key}" inputmode="decimal"
+              value="${escA(macroInputValue(e.macros, m.key))}" oninput="stashEditForm()"
+              ><span class="un">${m.unit}</span></span></div>`).join('')}
+        </div>
+        <div class="mnote">Leave anything you don't know <b>blank</b> — a blank one isn't shown on the
+          recipe at all. <b>0 is a real answer</b> and does get shown, so a recipe with no sugar can
+          say so.</div>
+      </div>
+    </div>
+
+    <div class="fsec">
       <h2>Notes <span class="hint">shown above the recipe when you cook it</span></h2>
       <div class="fsec-body">
         <textarea id="f_notes" rows="3" placeholder="Tweaks you made, what to serve it with, who liked it..."
@@ -3431,6 +3557,7 @@ function stashEditForm(){
   if(g('f_prep')) e.prepMinutes=mins(g('f_prep'));
   if(g('f_cook')) e.cookMinutes=mins(g('f_cook'));
   if(g('f_emoji')) e.emoji=g('f_emoji').value||'🍽️';
+  if(g('f_kcal')) e.macros=readMacroFields();
   if(g('f_tags')) e.tags=g('f_tags').value.split(',').map(t=>t.trim()).filter(Boolean).map(titleCase);
   if(g('f_notes')) e.notes=g('f_notes').value;
   if(g('f_cookbook')) e.cookbookId=g('f_cookbook').value||null;
@@ -3600,6 +3727,7 @@ async function commitEdit(){
     cookbookPage:e.cookbookPage||'',
     prepMinutes:e.prepMinutes||0,
     cookMinutes:e.cookMinutes||0,
+    ...(e.macros||{}),
     ingredients:e.ingredients.filter(i=>String(i.name||'').trim())
       .map(i=>({qtyRaw:i.qtyRaw!=null?String(i.qtyRaw):String(i.qty||''), unit:i.unit||'', name:i.name})),
     instructions:e.instructions.filter(s=>String(s||'').trim()),
