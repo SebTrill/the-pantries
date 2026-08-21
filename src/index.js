@@ -34,6 +34,7 @@
  *   POST   /api/cookbook-files/:id/focal   same, for book photos
  *   DELETE /api/cookbook-files/:id   delete a photo or file
  *   POST   /api/scan                 photo -> structured recipe (Anthropic vision)
+ *   POST   /api/import               {url} -> recipe draft, read from the page's JSON-LD
  *   GET    /api/emoji                emoji palette, ranked by real usage
  *   POST   /api/emoji                add one to the palette   {kind, emoji}
  *   DELETE /api/emoji                remove one you added     {kind, emoji}
@@ -522,6 +523,113 @@ async function scanRecipe(env, imageBase64, mediaType) {
     },
     flagged,
     notes: out.notes || '',
+  };
+}
+
+/* ---------- importing a recipe from a link ----------
+ * Most recipe sites publish their recipe as schema.org JSON-LD inside the page
+ * so search engines can read it. We read exactly that: no guessing at markup,
+ * no model call, no API key. A page that publishes nothing comes back empty and
+ * says so rather than inventing a recipe.
+ */
+
+/** "PT1H30M" -> 90. Also tolerates the day component some sites emit. */
+function isoDurationToMinutes(v) {
+  const m = String(v || '').match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?/);
+  if (!m) return 0;
+  const mins = (+(m[1] || 0)) * 1440 + (+(m[2] || 0)) * 60 + (+(m[3] || 0));
+  return Number.isFinite(mins) && mins > 0 ? Math.min(mins, 60 * 24 * 14) : 0;
+}
+
+/** Every ld+json block on the page. One broken block must not lose the others. */
+function collectJsonLd(html) {
+  const out = [];
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    try { out.push(JSON.parse(m[1].trim())); } catch (e) { /* skip it */ }
+  }
+  return out;
+}
+
+/** Recipes hide in different places: bare, in an array, or under @graph. */
+function findRecipeNode(node, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 6) return null;
+  if (Array.isArray(node)) {
+    for (const n of node) { const r = findRecipeNode(n, depth + 1); if (r) return r; }
+    return null;
+  }
+  const t = node['@type'];
+  if (t === 'Recipe' || (Array.isArray(t) && t.includes('Recipe'))) return node;
+  for (const key of ['@graph', 'mainEntity', 'mainEntityOfPage', 'itemListElement']) {
+    if (node[key]) { const r = findRecipeNode(node[key], depth + 1); if (r) return r; }
+  }
+  return null;
+}
+
+const stripTags = (s) => String(s || '')
+  .replace(/<[^>]*>/g, ' ')
+  .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+  .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+  .replace(/\s+/g, ' ').trim();
+
+/** Instructions come as a string, a list of strings, HowToStep objects, or
+ *  HowToSection objects wrapping more of the same. */
+function flattenInstructions(v, depth = 0) {
+  if (!v || depth > 5) return [];
+  if (typeof v === 'string') {
+    // A blob of HTML is common. Block-level tags are the step boundaries, so
+    // turn them into newlines BEFORE the markup is stripped — otherwise every
+    // paragraph collapses into one run-on step.
+    const withBreaks = String(v)
+      .replace(/<\/(p|div|li|h[1-6])\s*>/gi, '\n')
+      .replace(/<br\s*\/?>/gi, '\n');
+    // split BEFORE stripping: stripTags collapses all whitespace, newlines
+    // included, so stripping first would destroy the boundaries just inserted
+    return withBreaks.split(/\n+/)
+      .map(stripTags)
+      .flatMap(line => line.split(/(?<=\.)\s{2,}/))
+      .map(x => x.trim()).filter(Boolean);
+  }
+  if (Array.isArray(v)) return v.flatMap(x => flattenInstructions(x, depth + 1));
+  if (typeof v === 'object') {
+    if (v.itemListElement) return flattenInstructions(v.itemListElement, depth + 1);
+    if (v.text) return [stripTags(v.text)].filter(Boolean);
+    if (v.name) return [stripTags(v.name)].filter(Boolean);
+  }
+  return [];
+}
+
+const firstString = (v) => Array.isArray(v) ? firstString(v[0]) :
+  (v && typeof v === 'object' ? firstString(v.name || v['@value']) : (v == null ? '' : String(v)));
+
+function toList(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.map(firstString).map(s => stripTags(s)).filter(Boolean);
+  return String(v).split(',').map(s => stripTags(s)).filter(Boolean);
+}
+
+function mapLdRecipe(node, sourceUrl) {
+  const total = isoDurationToMinutes(node.totalTime);
+  let prep = isoDurationToMinutes(node.prepTime);
+  let cook = isoDurationToMinutes(node.cookTime);
+  // some sites give only a total; putting it all in "cook" is less wrong than
+  // splitting it arbitrarily
+  if (!prep && !cook && total) cook = total;
+
+  const yieldRaw = firstString(node.recipeYield);
+  const servings = parseInt(String(yieldRaw).match(/\d+/) || [0], 10) || 4;
+
+  return {
+    title: stripTags(firstString(node.name)) || 'Untitled Recipe',
+    ingredients: toList(node.recipeIngredient || node.ingredients),
+    instructions: flattenInstructions(node.recipeInstructions),
+    prepMinutes: prep,
+    cookMinutes: cook,
+    baseServings: servings,
+    categories: toList(node.recipeCategory).slice(0, 3).map(titleCase),
+    tags: toList(node.keywords).slice(0, 6).map(titleCase),
+    sourceUrl,
   };
 }
 
@@ -1056,6 +1164,42 @@ export default {
           await db.prepare('DELETE FROM shopping_items WHERE id=?').bind(sid).run();
           return json(await bootstrap(db));
         }
+      }
+
+      /* --- import from a link --- */
+      if (path === '/api/import' && method === 'POST') {
+        const b = await readJson(request);
+        let target;
+        try { target = new URL(String(b.url || '').trim()); }
+        catch (e) { return err('That does not look like a web address.'); }
+        if (!/^https?:$/.test(target.protocol)) return err('Only http and https links can be read.');
+
+        let res;
+        try {
+          res = await fetch(target.toString(), {
+            headers: {
+              'user-agent': 'Mozilla/5.0 (compatible; ThePantries/1.0; +recipe import)',
+              'accept': 'text/html,application/xhtml+xml',
+            },
+            redirect: 'follow',
+          });
+        } catch (e) {
+          return err('Could not reach that page. Check the address, or the site may be blocking us.', 502);
+        }
+        if (!res.ok) return err(`That page returned ${res.status}.`, 502);
+
+        // a few sites serve enormous pages; the recipe data is always near the top
+        const html = (await res.text()).slice(0, 3_000_000);
+        const node = collectJsonLd(html).map(x => findRecipeNode(x)).find(Boolean);
+        if (!node) {
+          return err("That page doesn't publish recipe data this can read. " +
+                     'You can still add it by hand or by scanning a photo.', 422);
+        }
+        const recipe = mapLdRecipe(node, target.toString());
+        if (!recipe.ingredients.length && !recipe.instructions.length) {
+          return err('Found recipe data on that page, but it was empty.', 422);
+        }
+        return json({ recipe });
       }
 
       /* --- AI scan --- */

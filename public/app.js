@@ -76,7 +76,8 @@ const storeSig = () => sigOf({recipes, cookbooks, globalSubs, allCategories, sho
  *  throw away whatever is being typed. */
 function safeToRefresh(){
   if (['editRecipe','editCookbook','scanning'].includes(state.view)) return false;
-  if (modalCfg || focalDraft || pasteDraft || state.notesDraft) return false;
+  if (modalCfg || focalDraft || pasteDraft || importDraft || dupDraft) return false;
+  if (state.notesDraft || state.bookNotesDraft) return false;
   if (busyDepth > 0) return false;
   return true;
 }
@@ -163,6 +164,8 @@ let state = {
   quickFilters:[],       // browse: never / unrated / nophoto / quick
   browseView:'grid',     // grid | list
   bookSort:'recipes',
+  tocSort:'page',        // cookbook contents: page | cooked | az
+  bookNotesDraft:null,
   recipeSubSearch:'',    // filter inside a recipe's substitutions tab
   notesDraft:null,       // {id,text} while notes are being edited in place
   showRateForm:false,
@@ -1144,106 +1147,235 @@ function viewCookbooks(){
             </div>`:''}
           </div>`}`;
 }
-const BOOK_RECIPE_LIMIT = 10;
-function onBookRecipeSearch(el){
-  focusId='bookRecipeSearch'; focusPos=el.selectionStart;
-  state.bookRecipeSearch=el.value; renderMain();
-}
-/* Recipes linked to this book, searchable, capped so a big book doesn't
-   bury the rest of the page. */
-function renderBookRecipes(b, mine){
-  const q=(state.bookRecipeSearch||'').trim().toLowerCase();
-  const matched = q
-    ? mine.filter(r => relevanceScore(r,q) > 0)
-        .sort((a,c)=>relevanceScore(c,q)-relevanceScore(a,q))
-    : mine.slice().sort((a,c)=>c.timesCooked-a.timesCooked);
-  const shown = matched.slice(0, BOOK_RECIPE_LIMIT);
-  const hidden = matched.length - shown.length;
-  return `
-    <div class="section-head"><h2>🍳 Recipes From This Book</h2>
-      <span class="subtle" style="margin:0;">${mine.length} linked</span></div>
-    ${mine.length > 4 ? `<div class="controls no-print" style="margin-bottom:14px;">
-      <div class="search-wrap"><span class="sicon">🔍</span>
-        <input id="bookRecipeSearch" type="text"
-          placeholder="Search this book's recipes by name, ingredient, or tag..."
-          value="${escA(state.bookRecipeSearch||'')}" oninput="onBookRecipeSearch(this)"></div>
-    </div>` : ''}
-    ${mine.length === 0
-      ? `<div class="empty">No recipes linked yet. Open a recipe, hit Edit, and choose this book
-          under "From a cookbook?".</div>`
-      : shown.length === 0
-        ? `<div class="empty">Nothing in this book matches "${esc(state.bookRecipeSearch)}".</div>`
-        : `<div class="grid">${shown.map(recipeCard).join('')}</div>
-           ${hidden > 0 ? `<div class="subtle" style="margin-top:12px;text-align:center;">
-             Showing ${shown.length} of ${matched.length} — ${q?'refine your search':'search above'} to narrow it down.
-           </div>` : ''}`}`;
-}
-
 function viewCookbookDetail(){
   const b=cookbooks.find(x=>x.id===state.currentBookId);
   if(!b) return `<div class="empty">Cookbook not found.</div>`;
   const cover=bookCover(b), mine=recipesInBook(b.id);
-  const facts=[['Author',b.author],['Publisher',b.publisher],['Published',b.published],
-               ['Edition',b.edition],['ISBN',b.isbn]].filter(f=>f[1]);
+  const tone=BOOK_TONES[cookbooks.findIndex(x=>x.id===b.id)%BOOK_TONES.length];
+  const cookedFrom=mine.reduce((t,r)=>t+(r.timesCooked||0),0);
+  const top=mine.slice().sort((a,c)=>c.timesCooked-a.timesCooked)[0];
+  const withPages=mine.filter(r=>pageNum(r)!==null).length;
+  // publication details read as one line; the author already has its own
+  const pub=[b.publisher, b.published, b.edition?`${b.edition} edition`:''].filter(Boolean).join(' · ');
   return `
     <button class="back no-print" onclick="goto('cookbooks')">← Back to cookbooks</button>
-    <div class="book-head">
-      <div class="book-cover">${cover
+    <div class="bhead">
+      <div class="bh-cov ${cover?'':tone}">${cover
         ? `<img src="${cover.url}" alt="${escA(b.title)}" style="${focalStyle(cover)}">
            <button class="hero-adjust no-print" onclick="openFocalEditor('book','${cover.id}')"
              title="Choose which part of the cover shows">⤧</button>`
-        : `<div class="book-cover-blank">${b.emoji}</div>`}</div>
-      <div style="flex:1;min-width:240px;">
-        <h1 class="title" style="font-size:26px;">${esc(b.title)}</h1>
-        ${b.author?`<p class="subtle" style="margin:2px 0 14px;font-size:15px;">${esc(b.author)}</p>`:''}
-        ${facts.length?`<dl class="facts">${facts.map(f=>
-          `<dt>${f[0]}</dt><dd>${esc(f[1])}</dd>`).join('')}</dl>`:''}
-        <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;" class="no-print">
+        : `<span class="cover-emoji">${b.emoji}</span>`}</div>
+      <div style="min-width:0;">
+        <h1 class="bh-title">${esc(b.title)}</h1>
+        ${b.author?`<p class="bh-author">${esc(b.author)}</p>`:''}
+        ${pub||b.isbn?`<div class="bmeta">
+          ${pub?`<span>${esc(pub)}</span>`:''}
+          ${b.isbn?`<span>ISBN ${esc(b.isbn)}</span>`:''}</div>`:''}
+
+        <div class="bfacts">
+          <div class="f"><div class="fl">Recipes</div><div class="fv">${mine.length}</div></div>
+          <div class="f"><div class="fl">Cooked from it</div>
+            <div class="fv">${cookedFrom} <small>MEAL${cookedFrom===1?'':'S'}</small></div></div>
+          <div class="f"><div class="fl">Most cooked</div>
+            <div class="fv" style="font-size:14px;">${top&&top.timesCooked
+              ? `${esc(top.title)} <small>${top.timesCooked}×</small>` : '—'}</div></div>
+          <div class="f"><div class="fl">Pages recorded</div>
+            <div class="fv">${withPages} <small>OF ${mine.length}</small></div></div>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;" class="no-print">
+          <button class="icon-btn primary" onclick="startAddRecipeForBook('${b.id}')">+ Add a recipe from this book</button>
           <button class="icon-btn" onclick="startEditCookbook('${b.id}')">✏️ Edit details</button>
           <button class="icon-btn" onclick="window.print()">🖨️ Print</button>
         </div>
       </div>
     </div>
 
-    ${b.notes?`<div class="section-head"><h2>📝 Notes</h2></div>
-      <div class="notes-body">${esc(b.notes).replace(/\n/g,'<br>')}</div>`:''}
+    ${renderBookNotes(b)}
+    ${renderContents(b, mine)}
 
-    ${renderBookRecipes(b, mine)}
+    <div class="twocol">
+      <div>
+        <div class="section-head slim"><h2>📷 Photos</h2>
+          <span class="subtle" style="margin:0;">${(b.images||[]).length}${
+            (b.images||[]).length?' · ★ marks the cover':''}</span></div>
+        ${(b.images||[]).length?`<div class="photo-grid">${b.images.map(im=>`
+          <div class="photo ${im.favorite?'is-cover':''}">
+            <img src="${im.url}" alt="${escA(im.filename||b.title)}">
+            <div class="photo-actions no-print">
+              <button class="pbtn fav ${im.favorite?'on':''}" title="${im.favorite?'Reposition this cover':'Make this the cover'}"
+                onclick="${im.favorite?`openFocalEditor('book','${im.id}')`:`setBookCover('${im.id}')`}">${im.favorite?'★':'☆'}</button>
+              ${im.favorite?`<button class="pbtn" title="Reposition" onclick="openFocalEditor('book','${im.id}')">⤧</button>`:''}
+              <button class="pbtn del" title="Delete" onclick="confirmDeleteBookFile('${b.id}','${im.id}')">×</button>
+            </div>
+            ${im.favorite?`<span class="cover-badge">★ Cover</span>`:''}
+          </div>`).join('')}</div>`:''}
+        <label class="slimzone no-print">
+          📁 ${(b.images||[]).length?'Add more photos':'Add photos of the book'}
+          <input type="file" accept="image/*" multiple onchange="handleBookUpload(event,'${b.id}')">
+        </label>
+      </div>
+      <div>
+        <div class="section-head slim"><h2>📄 Scanned files</h2>
+          <span class="subtle" style="margin:0;">${(b.files||[]).length}</span></div>
+        ${(b.files||[]).length?`<div class="file-list">${b.files.map(f=>`
+          <div class="file-row">
+            <span class="file-ico">${(f.contentType||'').includes('pdf')?'📕':'📄'}</span>
+            <div style="flex:1;min-width:0;">
+              <a class="file-name" href="${f.url}" download>${esc(f.filename||'file')}</a>
+              <div class="file-meta">${esc(f.contentType||'')} ${fmtBytes(f.sizeBytes)}</div>
+            </div>
+            <button class="rm-btn no-print" onclick="confirmDeleteBookFile('${b.id}','${f.id}')">×</button>
+          </div>`).join('')}</div>`:''}
+        <label class="slimzone no-print">
+          📎 Upload a scan or document
+          <input type="file" multiple onchange="handleBookUpload(event,'${b.id}')">
+        </label>
+      </div>
+    </div>`;
+}
 
-    <div class="section-head"><h2>📷 Photos</h2>
-      <span class="subtle" style="margin:0;">${(b.images||[]).length} photo${(b.images||[]).length!==1?'s':''}${(b.images||[]).length?' · ★ marks the cover':''}</span></div>
-    ${(b.images||[]).length?`<div class="photo-grid">${b.images.map(im=>`
-      <div class="photo ${im.favorite?'is-cover':''}">
-        <img src="${im.url}" alt="${escA(im.filename||b.title)}">
-        <div class="photo-actions no-print">
-          <button class="pbtn fav ${im.favorite?'on':''}" title="${im.favorite?'Reposition this cover':'Make this the cover'}"
-            onclick="${im.favorite?`openFocalEditor('book','${im.id}')`:`setBookCover('${im.id}')`}">${im.favorite?'★':'☆'}</button>
-          ${im.favorite?`<button class="pbtn" title="Reposition" onclick="openFocalEditor('book','${im.id}')">⤧</button>`:''}
-          <button class="pbtn del" title="Delete" onclick="confirmDeleteBookFile('${b.id}','${im.id}')">×</button>
+function onBookRecipeSearch(el){
+  focusId='bookRecipeSearch'; focusPos=el.selectionStart;
+  state.bookRecipeSearch=el.value; renderMain();
+}
+/* A recipe from a book has a page. It is free text ("112", "p. 44"), so read the
+   first number out of it and treat anything else as unrecorded. */
+function pageNum(r){
+  const m=String(r.cookbookPage||'').match(/\d+/);
+  return m ? parseInt(m[0],10) : null;
+}
+const TOC_SORTS = [
+  { key:'page',   label:'By page' },
+  { key:'cooked', label:'Most cooked' },
+  { key:'az',     label:'A → Z' },
+];
+function setTocSort(k){ state.tocSort=k; renderMain(); }
+
+/** Book notes edit in place. Unlike a recipe, PUT /api/cookbooks/:id only
+ *  updates columns — photos and files live in their own table — so sending the
+ *  whole book back is safe here. */
+function startBookNotesEdit(id){
+  const b=cookbooks.find(x=>x.id===id); if(!b) return;
+  state.bookNotesDraft={id, text:b.notes||''};
+  renderMain();
+  const el=document.getElementById('bookNotesDraft');
+  if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+}
+function cancelBookNotesEdit(){ state.bookNotesDraft=null; renderMain(); }
+async function saveBookNotesEdit(id){
+  const b=cookbooks.find(x=>x.id===id); if(!b) return;
+  const el=document.getElementById('bookNotesDraft');
+  try{
+    await apiJSON('/api/cookbooks/'+id,'PUT',{
+      title:b.title, author:b.author, publisher:b.publisher, published:b.published,
+      edition:b.edition, isbn:b.isbn, emoji:b.emoji, notes:el?el.value:'',
+    });
+    state.bookNotesDraft=null;
+    render(); toast('Notes saved.');
+  }catch(e){ apiError(e); }
+}
+function renderBookNotes(b){
+  const editing = state.bookNotesDraft && state.bookNotesDraft.id===b.id;
+  if(editing){
+    return `<div class="section-head slim"><h2>📝 Notes</h2></div>
+      <div class="notes-band editing no-print">
+        <textarea id="bookNotesDraft" rows="3"
+          placeholder="Where it came from, who gave it to you, which sections are worth cooking from...">${esc(state.bookNotesDraft.text)}</textarea>
+        <div class="note-btns">
+          <button class="icon-btn" onclick="cancelBookNotesEdit()">Cancel</button>
+          <button class="icon-btn primary" onclick="saveBookNotesEdit('${b.id}')">💾 Save notes</button>
         </div>
-        ${im.favorite?`<span class="cover-badge">★ Cover</span>`:''}
-      </div>`).join('')}</div>`:''}
-    <label class="upload-zone no-print">
-      📁 ${(b.images||[]).length?'Add more photos':'Add photos of the book'} — click to choose
-      <input type="file" accept="image/*" multiple onchange="handleBookUpload(event,'${b.id}')">
-    </label>
+      </div>`;
+  }
+  const has=(b.notes||'').trim();
+  return `<div class="section-head slim"><h2>📝 Notes</h2>
+      <button class="icon-btn sm no-print" onclick="startBookNotesEdit('${b.id}')">✏️ Edit</button></div>
+    ${has?`<div class="notes-body">${esc(b.notes).replace(/\n/g,'<br>')}</div>`
+         :`<div class="notes-empty">Nothing yet — where it came from, or which half of it is
+            actually worth cooking.</div>`}`;
+}
 
-    <div class="section-head"><h2>📄 Scanned Files</h2>
-      <span class="subtle" style="margin:0;">${(b.files||[]).length} file${(b.files||[]).length!==1?'s':''}</span></div>
-    ${(b.files||[]).length?`<div class="file-list">${b.files.map(f=>`
-      <div class="file-row">
-        <span class="file-ico">${(f.contentType||'').includes('pdf')?'📕':'📄'}</span>
-        <div style="flex:1;min-width:0;">
-          <a class="file-name" href="${f.url}" download>${esc(f.filename||'file')}</a>
-          <div class="file-meta">${esc(f.contentType||'')} ${fmtBytes(f.sizeBytes)}</div>
-        </div>
-        <button class="rm-btn no-print" onclick="confirmDeleteBookFile('${b.id}','${f.id}')">×</button>
-      </div>`).join('')}</div>`
-      :`<div class="empty" style="padding:14px 0;">Nothing scanned yet. PDFs or scans of the book go here.</div>`}
-    <label class="upload-zone no-print">
-      📎 Upload a scan or document (PDF, images, anything)
-      <input type="file" multiple onchange="handleBookUpload(event,'${b.id}')">
-    </label>`;
+function renderContents(b, mine){
+  const q=(state.bookRecipeSearch||'').trim().toLowerCase();
+  const matched = q ? mine.filter(r=>relevanceScore(r,q)>0) : mine.slice();
+  const sort = state.tocSort || 'page';
+  const byTitle=(a,c)=>a.title.localeCompare(c.title);
+  let groups;
+  if(sort==='page'){
+    // recipes whose page you never wrote down collect at the end, where the
+    // gap is visible rather than silently interleaved
+    const withP=matched.filter(r=>pageNum(r)!==null).sort((a,c)=>pageNum(a)-pageNum(c));
+    const noP=matched.filter(r=>pageNum(r)===null).sort(byTitle);
+    groups=[[null,withP],[noP.length?'No page recorded':null,noP]];
+  } else {
+    const all=matched.slice().sort(sort==='cooked'
+      ? (a,c)=>c.timesCooked-a.timesCooked || byTitle(a,c)
+      : byTitle);
+    groups=[[null,all]];
+  }
+  const row=r=>{
+    const p=pageNum(r);
+    return `<div class="toc-row" onclick="openRecipe('${r.id}')">
+      <span class="toc-pg ${p===null?'none':''}">${p===null?'—':p}</span>
+      <span class="toc-em">${r.emoji}</span>
+      <span style="min-width:0;"><span class="toc-t">${esc(r.title)}</span></span>
+      <span class="toc-c">${r.categories.map(esc).join(' · ')}</span>
+      <span class="col-rating">${r.ratings.length
+        ? `<span class="rl-stars">${starString(avgRating(r))}</span>
+           <span class="rl-count">(${r.ratings.length})</span>`
+        : `<span class="unrated">unrated</span>`}</span>
+      <span class="toc-n">${r.timesCooked}×</span>
+      <button class="toc-x no-print" title="Remove recipe"
+        onclick="event.stopPropagation(); confirmDeleteRecipe('${r.id}')">×</button>
+    </div>`;
+  };
+  return `
+    <div class="section-head"><h2>📖 Contents</h2>
+      <div style="display:flex;gap:9px;align-items:center;" class="no-print">
+        ${mine.length>1?`<div class="segmented">
+          ${TOC_SORTS.map(s=>`<button class="${sort===s.key?'on':''}"
+            onclick="setTocSort('${s.key}')">${s.label}</button>`).join('')}
+        </div>`:''}
+        <span class="subtle" style="margin:0;">${q?`${matched.length} of ${mine.length}`
+          :`${mine.length} recipe${mine.length===1?'':'s'}`}</span>
+      </div></div>
+
+    ${mine.length>4?`<div class="controls no-print" style="margin-bottom:14px;">
+      <div class="search-wrap"><span class="sicon">🔍</span>
+        <input id="bookRecipeSearch" type="text"
+          placeholder="Search this book's recipes by name, ingredient, or tag..."
+          value="${escA(state.bookRecipeSearch||'')}" oninput="onBookRecipeSearch(this)"></div>
+    </div>`:''}
+
+    ${mine.length===0
+      ? `<div class="empty">No recipes linked yet.
+          <button class="icon-btn sm no-print" style="margin-top:14px;"
+            onclick="startAddRecipeForBook('${b.id}')">+ Add the first one</button></div>`
+      : matched.length===0
+        ? `<div class="empty">Nothing in this book matches "${esc(state.bookRecipeSearch)}".</div>`
+        : `<div class="toc">
+            <div class="toc-head"><span style="text-align:right;">Page</span><span></span>
+              <span>Recipe</span><span>Categories</span><span class="col-rating">Rating</span>
+              <span style="text-align:right;">Cooked</span><span></span></div>
+            ${groups.map(([label,list])=>
+              (list.length?`${label?`<div class="toc-split">${label}</div>`:''}${list.map(row).join('')}`:'')
+            ).join('')}
+          </div>`}`;
+}
+
+/** Adding a recipe from the book's own page: the book is already the answer to
+ *  "where did this come from", so skip the choice and pre-link it. */
+function startAddRecipeForBook(bookId){
+  attemptNav(()=>{
+    state.scanSource=null; state.scanImage=null;
+    state.editing={...blankRecipeDraft(), cookbookId:bookId};
+    state.view='editRecipe';
+    markEditBaseline();
+    render();
+    const b=bookById(bookId);
+    toast(b?`New recipe, linked to ${b.title}.`:'New recipe.');
+  });
 }
 
 function startAddCookbook(){
@@ -1702,13 +1834,19 @@ function currentDraft(){
   if(state.view==='editCookbook') { stashBookForm(); return state.editingBook; }
   return null;
 }
-function markEditBaseline(){
+/* `forced` marks a draft that arrived already holding work — a copy of an
+   existing recipe, or one read off a link. Nothing has "changed" yet, but
+   walking away would still lose something you did. */
+let editForcedDirty = false;
+function markEditBaseline(forced){
   const d = state.view==='editRecipe' ? state.editing
           : state.view==='editCookbook' ? state.editingBook : null;
   editBaseline = d ? JSON.stringify(d) : null;
+  editForcedDirty = !!forced;
 }
 function isEditDirty(){
   if(!inEditForm() || editBaseline==null) return false;
+  if(editForcedDirty) return true;
   try{ return JSON.stringify(currentDraft()) !== editBaseline; }
   catch(e){ return false; }
 }
@@ -1744,7 +1882,7 @@ function describeEditChanges(){
 function clearEditDraft(){
   state.editing=null; state.editingBook=null;
   state.scanSource=null; state.scanImage=null;
-  editBaseline=null;
+  editBaseline=null; editForcedDirty=false;
 }
 /** Runs `leave` only once it's safe to lose the draft. `onStay` lets the caller
  *  put things back — the browser's back button needs the URL restored. */
@@ -2721,27 +2859,204 @@ function submitRecipeSub(recipeId){
 }
 
 /* ============ ADD / EDIT RECIPE ============ */
+/* ============ WAYS INTO A RECIPE ============
+ * Typing one in from scratch is the least common way you actually acquire a
+ * recipe. Copying one you already cook, and pulling one off a page you found,
+ * are both more frequent — and both were missing.
+ */
 function startAddRecipe(){
   attemptNav(()=>{
+    const canCopy = recipes.length > 0;
     showModal({
       title:'Add a recipe',
-      body:`<div class="choice-grid">
-        <div class="choice" onclick="closeModal(); startManualRecipe();">
+      body:`<div class="choice4">
+        <div class="ch" onclick="closeModal(); startManualRecipe();">
           <div class="cico">✍️</div><h4>Type it in</h4>
           <p>Enter the ingredients and steps yourself.</p></div>
-        ${scanEnabled?`<label class="choice">
-          <div class="cico">📷</div><h4>Scan a photo</h4>
-          <p>Snap a cookbook page, index card, or screenshot and let it read the recipe for you.</p>
-          <input type="file" accept="image/*" style="display:none" onchange="handleScanUpload(event)">
-        </label>`:`<div class="choice" style="opacity:.55;cursor:not-allowed;">
-          <div class="cico">📷</div><h4>Scan a photo</h4>
-          <p>Unavailable — no scanning API key is configured on this site.</p>
-        </div>`}
+        <div class="ch" onclick="closeModal(); openImport();">
+          <div class="cico">🔗</div><h4>From a link</h4>
+          <p>Paste a recipe page's address and pull the ingredients and method off it.</p></div>
+        ${canCopy
+          ? `<div class="ch" onclick="closeModal(); openDuplicatePicker();">
+              <div class="cico">📋</div><h4>Start from one you have</h4>
+              <p>Copy an existing recipe and change what's different.</p></div>`
+          : `<div class="ch off"><div class="cico">📋</div><h4>Start from one you have</h4>
+              <p>Nothing to copy yet — add a recipe first.</p></div>`}
+        ${scanEnabled
+          ? `<label class="ch">
+              <div class="cico">📷</div><h4>Scan a photo</h4>
+              <p>Snap a cookbook page, index card, or screenshot and let it read the recipe for you.</p>
+              <input type="file" accept="image/*" style="display:none" onchange="handleScanUpload(event)">
+            </label>`
+          : `<div class="ch off"><div class="cico">📷</div><h4>Scan a photo</h4>
+              <p>Unavailable — no scanning API key is configured on this site.</p></div>`}
       </div>`,
       buttons:[{label:'Cancel'}]
     });
   });
 }
+
+/* ---- copying one you already have ---- */
+let dupDraft=null;
+function openDuplicatePicker(){ dupDraft={q:''}; renderDuplicatePicker(); }
+function closeDuplicate(){ dupDraft=null; closeModal(); }
+function onDupSearch(el){ dupDraft.q=el.value; renderDupList(); }
+function dupMatches(){
+  const q=(dupDraft.q||'').trim().toLowerCase();
+  const list = q ? recipes.filter(r=>relevanceScore(r,q)>0)
+                     .sort((a,b)=>relevanceScore(b,q)-relevanceScore(a,q))
+                 : recipes.slice().sort((a,b)=>b.timesCooked-a.timesCooked);
+  return list.slice(0,40);
+}
+function renderDupList(){
+  const box=document.getElementById('dupList');
+  if(!box) return;
+  const list=dupMatches();
+  box.innerHTML = list.length
+    ? list.map(r=>`<div class="duprow" onclick="duplicateRecipe('${r.id}')">
+        <span class="e">${r.emoji}</span>
+        <span class="t">${esc(r.title)}</span>
+        <span class="m">${r.ingredients.length} ingredient${r.ingredients.length===1?'':'s'} ·
+          ${r.instructions.length} step${r.instructions.length===1?'':'s'}</span>
+      </div>`).join('')
+    : `<div class="empty" style="padding:18px 0;font-size:14px;">Nothing matches that.</div>`;
+}
+function renderDuplicatePicker(){
+  if(!dupDraft){ closeModal(); return; }
+  const root=document.getElementById('modalRoot');
+  root.className='show';
+  root.innerHTML=`<div class="modal" style="max-width:560px;">
+    <h3>Start from one you have</h3>
+    <div class="mbody">
+      <p style="margin:0 0 12px;">Pick a recipe to copy. Ingredients, steps, categories, tags and
+        times come across; the cook count, ratings and photos start fresh.</p>
+      <input class="dupsearch" id="dupSearch" type="text" placeholder="Search your recipes..."
+        value="${escA(dupDraft.q)}" oninput="onDupSearch(this)">
+      <div class="duplist" id="dupList"></div>
+    </div>
+    <div class="mbtns"><button class="icon-btn" onclick="closeDuplicate()">Cancel</button></div>
+  </div>`;
+  renderDupList();
+  const el=document.getElementById('dupSearch'); if(el) el.focus();
+}
+function duplicateRecipe(id){
+  const src=recipes.find(r=>r.id===id);
+  if(!src) return;
+  closeDuplicate();
+  const copy=JSON.parse(JSON.stringify(src));
+  copy.id=null;
+  copy.title=`${src.title} (copy)`;
+  copy.dateAdded=localDay();
+  // earned history does not come across, and photos live in storage tied to the
+  // original, so a copy starts without them
+  copy.timesCooked=0; copy.ratings=[]; copy.images=[]; copy.localSubs=[];
+  copy.lastCookedAt=null; copy.cookMonths={};
+  copy.ingredients=(copy.ingredients||[]).map(i=>({...i, id:uid()}));
+  state.editing=copy; state.scanSource=null; state.scanImage=null;
+  state.view='editRecipe';
+  markEditBaseline(true);          // it already holds real work: warn on the way out
+  render();
+  toast('Copied — nothing is saved until you hit Save Recipe.');
+}
+
+/* ---- pulling one off a page ---- */
+let importDraft=null;
+function openImport(){ importDraft={url:'', error:'', recipe:null, busy:false}; renderImport(); }
+function closeImport(){ importDraft=null; closeModal(); }
+function renderImport(){
+  const d=importDraft;
+  if(!d){ closeModal(); return; }
+  const root=document.getElementById('modalRoot');
+  root.className='show';
+  const r=d.recipe;
+  root.innerHTML=`<div class="modal" style="max-width:600px;">
+    <h3>Add from a link</h3>
+    <div class="mbody">
+      <div class="urlrow">
+        <input type="text" id="importUrl" placeholder="https://…" value="${escA(d.url)}"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();runImport();}">
+        <button class="icon-btn primary" onclick="runImport()" ${d.busy?'disabled':''}>
+          ${d.busy?'Reading…':'Fetch'}</button>
+      </div>
+      ${d.error?`<div class="import-err">${esc(d.error)}</div>`:''}
+      ${r?`<div class="found">
+        <h4>${esc(r.title)}</h4>
+        <div class="fm">${r.ingredients.length} ingredient${r.ingredients.length===1?'':'s'} ·
+          ${r.instructions.length} step${r.instructions.length===1?'':'s'}${
+          r.prepMinutes?` · ${r.prepMinutes} min prep`:''}${
+          r.cookMinutes?` · ${esc(fmtTotal(r.cookMinutes))} cook`:''}${
+          r.baseServings?` · serves ${r.baseServings}`:''}</div>
+        <ul>
+          ${r.ingredients.slice(0,3).map(i=>`<li>${esc(i)}</li>`).join('')}
+          ${r.ingredients.length>3?`<li class="more">…and ${r.ingredients.length-3} more</li>`:''}
+        </ul>
+        <div class="srcnote">✓ Read from the page's own recipe data</div>
+      </div>
+      <p class="subtle" style="margin:13px 0 0;font-size:13px;">
+        Everything lands in the normal form for you to check before saving, and the address is kept in
+        the notes so you can find the original again.</p>`
+      :`<p class="subtle" style="margin:4px 0 0;font-size:13.5px;">
+        Most recipe sites publish their recipe inside the page for search engines. This reads that —
+        no guessing, and nothing is saved until you look it over.</p>`}
+    </div>
+    <div class="mbtns">
+      <button class="icon-btn" onclick="closeImport()">Cancel</button>
+      ${r?`<button class="icon-btn primary" onclick="acceptImport()">Open in the form</button>`:''}
+    </div>
+  </div>`;
+  const el=document.getElementById('importUrl');
+  if(el && !d.busy && !r){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+}
+async function runImport(){
+  const el=document.getElementById('importUrl');
+  let url=(el?el.value:'').trim();
+  if(!url){ toast('Paste a link first.'); return; }
+  if(!/^https?:\/\//i.test(url)) url='https://'+url;
+  importDraft.url=url; importDraft.error=''; importDraft.recipe=null; importDraft.busy=true;
+  renderImport();
+  try{
+    const res=await api('/api/import',{
+      method:'POST', headers:{'content-type':'application/json'},
+      body:JSON.stringify({url}),
+    }, true);
+    importDraft.recipe=res.recipe; importDraft.busy=false; renderImport();
+  }catch(e){
+    importDraft.busy=false;
+    importDraft.error=(e&&e.message)?e.message:'Could not read that page.';
+    renderImport();
+  }
+}
+function acceptImport(){
+  const r=importDraft && importDraft.recipe;
+  if(!r) return;
+  // the same line parser the paste-a-list dialog uses, so "1 1/2 cups flour"
+  // splits the same way whatever route it came in by
+  const ings=(r.ingredients||[]).map(line=>{
+    const p=parseIngredientLine(line);
+    return p ? {id:uid(), qtyRaw:p.qtyRaw, qty:parseQty(p.qtyRaw), unit:p.unit, name:p.name}
+             : {id:uid(), qtyRaw:'', qty:0, unit:'', name:titleCase(line)};
+  }).filter(Boolean);
+  const src=r.sourceUrl||importDraft.url;
+  closeImport();
+  state.editing={
+    ...blankRecipeDraft(),
+    title:r.title||'Untitled Recipe',
+    baseServings:r.baseServings||4,
+    prepMinutes:r.prepMinutes||0,
+    cookMinutes:r.cookMinutes||0,
+    categories:(r.categories&&r.categories.length)?r.categories:['Dinner'],
+    tags:r.tags||[],
+    ingredients:ings.length?ings:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],
+    instructions:(r.instructions&&r.instructions.length)?r.instructions:[''],
+    notes:src?`From ${src}`:'',
+  };
+  state.scanSource=null; state.scanImage=null;
+  state.view='editRecipe';
+  markEditBaseline(true);
+  render();
+  toast('Read it in — check it over before saving.');
+}
+
 /* ---- Scan-to-recipe ---- */
 async function handleScanUpload(ev){
   const f=ev.target.files[0];
@@ -2787,7 +3102,7 @@ function applyScanResult(res){
     ingredients:ings, instructions:r.instructions||[],
   };
   state.scanSource={image:state.scanImage, flagged:res.flagged||[], notes:res.notes||''};
-  state.view='editRecipe'; markEditBaseline(); render();
+  state.view='editRecipe'; markEditBaseline(true); render();
   const n=(res.flagged||[]).length;
   toast(n?`Recipe read — ${n} line${n!==1?'s':''} flagged for you to check.`:'Recipe read — please review before saving.');
 }
