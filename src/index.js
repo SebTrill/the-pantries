@@ -6,7 +6,8 @@
  *   POST   /api/recipes              create
  *   PUT    /api/recipes/:id          update
  *   DELETE /api/recipes/:id          delete (cascades)
- *   POST   /api/recipes/:id/cook     increment cook counter
+ *   POST   /api/recipes/:id/cook     increment cook counter + log the cook
+ *                                    body: {day} — the cook's LOCAL date
  *   POST   /api/recipes/:id/ratings  add rating + increment cook counter
  *   POST   /api/recipes/:id/photos   upload photo -> R2
  *   DELETE /api/photos/:id           delete photo (promotes a new cover if needed)
@@ -47,11 +48,44 @@ const uid = () =>
 const now = () => Date.now();
 const dayKey = (ts) => new Date(ts).toISOString().slice(0, 10);
 
+/** A request body that may be empty — POSTs without a body are normal here. */
+async function readJson(request) {
+  try { return await request.json(); } catch (e) { return {}; }
+}
+
+/**
+ * Which calendar day a meal belongs to.
+ *
+ * The Worker's clock is UTC, so stamping the day from it puts anything cooked
+ * after early evening in the Americas on TOMORROW's square — the meal is logged
+ * but shows up on the wrong day, or on no day you'd think to look at. The
+ * browser is the only party that knows the cook's real local date, so it sends
+ * it. We sanity-check it against our own clock (a day either way is plausible;
+ * anything further is a broken or spoofed client) and fall back to the timezone
+ * Cloudflare attaches to the request, then to UTC.
+ */
+function localDay(body, request, ts) {
+  const claimed = body && typeof body.day === 'string' ? body.day.trim() : '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(claimed)) {
+    const noon = Date.parse(claimed + 'T12:00:00Z');
+    if (Number.isFinite(noon) && Math.abs(noon - ts) < 36 * 3600 * 1000) return claimed;
+  }
+  const tz = request && request.cf && request.cf.timezone;
+  if (tz) {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date(ts));
+    } catch (e) { /* unknown zone: fall through to UTC */ }
+  }
+  return dayKey(ts);
+}
+
 /** Records one cooked meal. Called by the cook button and by rating a recipe. */
-function logCook(db, recipeId, ts, source) {
+function logCook(db, recipeId, ts, day, source) {
   return db.prepare(
     'INSERT INTO cook_events (id,recipe_id,cooked_at,cooked_on,source) VALUES (?,?,?,?,?)'
-  ).bind(uid(), recipeId, ts, dayKey(ts), source);
+  ).bind(uid(), recipeId, ts, day, source);
 }
 
 /* ---------- text + quantity normalization (mirrors the client) ---------- */
@@ -546,7 +580,14 @@ export default {
       }
 
       if (!path.startsWith('/api/')) {
-        return env.ASSETS.fetch(request);
+        const res = await env.ASSETS.fetch(request);
+        // Real sub-pages (/recipe/edit, /shopping-list, ...) are the app's own
+        // routes, not files on disk. Anything without a file extension that the
+        // asset server doesn't know gets the app shell, which then routes itself.
+        if (res.status === 404 && !/\.[a-z0-9]+$/i.test(path)) {
+          return env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
+        }
+        return res;
       }
 
       /* --- identity (populated by Cloudflare Access) --- */
@@ -602,26 +643,27 @@ export default {
 
         if (sub === '/cook' && method === 'POST') {
           const ts = now();
+          const day = localDay(await readJson(request), request, ts);
           await db.batch([
             db.prepare('UPDATE recipes SET times_cooked = times_cooked + 1, updated_at=? WHERE id=?')
               .bind(ts, id),
-            logCook(db, id, ts, 'button'),
+            logCook(db, id, ts, day, 'button'),
           ]);
           return json(await bootstrap(db));
         }
 
         if (sub === '/ratings' && method === 'POST') {
-          const body = await request.json();
+          const body = await readJson(request);
           const stars = Math.min(5, Math.max(1, parseInt(body.stars, 10) || 5));
           const ts = now();
+          const day = localDay(body, request, ts);
           await db.batch([
             db.prepare(`INSERT INTO ratings (id,recipe_id,stars,comment,date,created_at)
                         VALUES (?,?,?,?,?,?)`)
-              .bind(uid(), id, stars, String(body.comment || '').trim(),
-                new Date().toISOString().slice(0, 10), ts),
+              .bind(uid(), id, stars, String(body.comment || '').trim(), day, ts),
             db.prepare('UPDATE recipes SET times_cooked = times_cooked + 1, updated_at=? WHERE id=?')
               .bind(ts, id),
-            logCook(db, id, ts, 'rating'),
+            logCook(db, id, ts, day, 'rating'),
           ]);
           return json(await bootstrap(db), 201);
         }
@@ -867,6 +909,11 @@ export default {
             sets.push('name=?'); vals.push(titleCase(b.name));
             if (cur && !cur.orig_name) { sets.push('orig_name=?'); vals.push(cur.name); }
           }
+          if (b.qty !== undefined) {
+            // 0 would mean "buy none of it", which is what deleting the row is for
+            sets.push('qty=?'); vals.push(Math.max(0.01, parseQty(b.qty) || 1));
+          }
+          if (b.unit !== undefined) { sets.push('unit=?'); vals.push(String(b.unit || '').trim()); }
           if (!sets.length) return err('Nothing to update');
           vals.push(sid);
           await db.prepare(`UPDATE shopping_items SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
