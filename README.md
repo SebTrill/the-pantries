@@ -336,6 +336,58 @@ anything is added.
 
 ---
 
+## The shopping list
+
+The list is grouped the way a shop is laid out rather than in the order things were added, so you
+walk it once. `AISLES` in `public/app.js` is both the classifier and the running order — the array's
+order is the page's order, produce first and drinks last. Sections come out of the ingredient name;
+anything unrecognised goes to **Other**, visibly, rather than being guessed into the wrong aisle.
+
+`aisleFor()` asks the **end** of the name before the whole name. In English the last word is the thing
+you are buying and everything before it describes it, so "chicken stock" is a stock and not a chicken.
+Without that rule "chicken" wins for being the longer word and the row lands in the meat aisle. Two
+things override it: a multi-word key beats a one-word key ("sour cream" beats "cream"), and "frozen"
+beats the noun it modifies, because frozen peas are in the freezer and not with the fresh produce.
+
+Ticked items leave their aisle and collect in the **Got it** drawer. They used to stay put at half
+opacity, which made the part you still had to shop harder to read the further along you got.
+
+### Merging, which had three bugs in it
+
+Adding the same ingredient twice merges the rows. All three of the following were live:
+
+**Units were never compared.** The merge added the numbers and kept the first row's unit — and the
+query that looked for a match did not even `SELECT` the unit column. "2 cups flour" plus "1 lb flour"
+came back as "3 cups". Now `unitKey()` normalises spelling (tablespoon / Tablespoons / Tbsp. all land
+on `tbsp`) and `foldQty()` only adds when the units are actually the same. When they are not, the
+other amount is kept beside the row in `alt` and shown as a note — never converted, because a pound
+and a cup of flour are not a quantity anyone can add.
+
+**Names were compared as whole strings**, so "Lemons, Zested and Juiced", "Lemons" and "Lemon" were
+three rows and you would have bought lemons three times. `shopKey()` drops the preparation clause
+after the comma, drops a few leading adjectives, and singularises.
+
+It deliberately does **not** do substring matching. The client's `subMatches()` does, which is right
+for offering a substitution and badly wrong for deciding what to buy — it would merge Butter into
+Buttermilk. If you ever "improve" `shopKey()` by reusing `subMatches()`, `aisle-test.js` and
+`shop-merge-test.js` will both tell you.
+
+**Only the first recipe was remembered.** Adding Pancakes to a list that already held Lemon Bread's
+flour left a row reading "from Lemon Bread" and never mentioning Pancakes. Sources accumulate in
+`sources` now.
+
+Two smaller consequences worth knowing. Merging shortens a name that carries a comma, because
+"Lemons, Zested and Juiced" is not a thing to buy six of. And grouped **By recipe**, a shared row
+appears under every recipe that wants it carrying the whole amount — so it says "shared · also for
+…", which is the difference between "buy six lemons" and "buy six lemons for this salad".
+
+The `Find` menu opens **sideways** into its own row, not downwards. Dropping it below covered the next
+two rows' buttons, so a click meant for the row underneath landed on this row's shop link instead.
+
+Migration `migrate-008-shopping.sql` adds `sources` and `alt` and backfills from `from_recipe`.
+
+---
+
 ## Six details that are easy to break
 
 **Calendar days come from the browser, not the server.** The Worker's clock is UTC. Stamp a

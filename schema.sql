@@ -137,6 +137,10 @@ CREATE TABLE IF NOT EXISTS shopping_items (
   checked     INTEGER NOT NULL DEFAULT 0,
   from_recipe TEXT NOT NULL DEFAULT 'manual',
   orig_name   TEXT,
+  -- every recipe that wants this item, not just the first one to ask
+  sources     TEXT NOT NULL DEFAULT '[]',
+  -- amounts in units that cannot be added to qty, kept rather than converted
+  alt         TEXT NOT NULL DEFAULT '[]',
   created_at  INTEGER NOT NULL
 );
 

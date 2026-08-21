@@ -133,6 +133,67 @@ function parseQty(input) {
   return matched ? total : 0;
 }
 
+/* ---------- shopping-list merging ----------
+ * Two rows on a shopping list are the same purchase when they are the same
+ * thing at the shop. "Lemons, Zested and Juiced" and "Lemon" are one purchase;
+ * Butter and Buttermilk are two, however similar the strings look.
+ *
+ * So the key drops anything after a comma (that is where preparation lives —
+ * "melted", "zested and juiced", "finely chopped"), drops a few leading
+ * adjectives that describe the same item, and singularises. It deliberately
+ * does NOT do substring matching: the client's subMatches() treats "butter"
+ * as matching "buttermilk", which is right for offering a substitution and
+ * badly wrong for deciding what to buy.
+ */
+const SHOP_ADJECTIVES = /^(fresh|large|small|medium|whole|ripe|raw|organic|unsalted|salted)\s+/;
+
+function shopKey(name) {
+  let s = String(name || '').toLowerCase().split(',')[0]
+    .replace(/[^a-z0-9\s/-]/g, ' ').replace(/\s+/g, ' ').trim();
+  let prev;
+  do { prev = s; s = s.replace(SHOP_ADJECTIVES, '').trim(); } while (s !== prev);
+  return s.replace(/oes$/, 'o').replace(/ies$/, 'y').replace(/([^s])s$/, '$1');
+}
+
+/* Units only add up when they are the same unit. Spelling is not the same
+   question as identity, so tablespoon/tablespoons/Tbsp. all land on 'tbsp'. */
+const UNIT_ALIASES = {
+  tablespoon:'tbsp', tablespoons:'tbsp', tbsps:'tbsp', tbs:'tbsp', tb:'tbsp',
+  teaspoon:'tsp', teaspoons:'tsp', tsps:'tsp',
+  cups:'cup', c:'cup',
+  pound:'lb', pounds:'lb', lbs:'lb',
+  ounce:'oz', ounces:'oz', ozs:'oz',
+  fluidounce:'floz', 'fl oz':'floz', 'fluid ounce':'floz', 'fluid ounces':'floz',
+  gram:'g', grams:'g', gs:'g',
+  kilogram:'kg', kilograms:'kg', kilo:'kg', kilos:'kg',
+  milliliter:'ml', milliliters:'ml', millilitre:'ml', millilitres:'ml',
+  liter:'l', liters:'l', litre:'l', litres:'l',
+  cloves:'clove', sprigs:'sprig', stalks:'stalk', slices:'slice', pieces:'piece',
+  cans:'can', packages:'package', pkg:'package', pkgs:'package',
+  bunches:'bunch', heads:'head', sticks:'stick', pinches:'pinch', dashes:'dash',
+  quart:'qt', quarts:'qt', pint:'pt', pints:'pt', gallon:'gal', gallons:'gal',
+};
+function unitKey(unit) {
+  const s = String(unit || '').toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
+  return UNIT_ALIASES[s] || s;
+}
+
+const jsonArray = (raw, fallback = []) => {
+  try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v : fallback; }
+  catch (e) { return fallback; }
+};
+
+/** Fold one incoming {qty, unit} into a row's main amount, or into its list of
+ *  amounts that could not honestly be added to it. */
+function foldQty(row, qty, unit) {
+  const u = unitKey(unit);
+  if (u === unitKey(row.unit)) return { qty: row.qty + qty, unit: row.unit, alt: row.alt };
+  const alt = row.alt.slice();
+  const hit = alt.find(a => unitKey(a.unit) === u);
+  if (hit) hit.qty += qty; else alt.push({ qty, unit: String(unit || '') });
+  return { qty: row.qty, unit: row.unit, alt };
+}
+
 /* ---------- emoji palette ----------
  * A starting row that covers most cooking, plus whatever you add. Ordering is
  * by how many recipes actually use each one, counted live — so the palette
@@ -319,6 +380,11 @@ async function bootstrap(db) {
     shoppingList: shopping.results.map(s => ({
       id: s.id, name: s.name, qty: s.qty, unit: s.unit,
       checked: !!s.checked, fromRecipe: s.from_recipe, origName: s.orig_name || undefined,
+      // every recipe that wants it, and any amount whose unit could not be
+      // added to qty without inventing a conversion
+      sources: jsonArray(s.sources, s.from_recipe && s.from_recipe !== 'manual'
+        ? [s.from_recipe] : []),
+      alt: jsonArray(s.alt),
     })),
   };
 }
@@ -1110,23 +1176,49 @@ export default {
       if (path === '/api/shopping' && method === 'POST') {
         const b = await request.json();
         const items = Array.isArray(b.items) ? b.items : [b];
-        const existing = await db.prepare('SELECT id,name,qty FROM shopping_items').all();
+        const rows = await db.prepare(
+          'SELECT id,name,qty,unit,from_recipe,sources,alt FROM shopping_items').all();
+        // one working copy per row, so a batch of items merges against the
+        // running totals rather than against the state before the batch began
+        const live = rows.results.map(r => ({
+          id: r.id, key: shopKey(r.name), name: r.name, qty: r.qty, unit: r.unit || '',
+          sources: jsonArray(r.sources, r.from_recipe && r.from_recipe !== 'manual'
+            ? [r.from_recipe] : []),
+          alt: jsonArray(r.alt), dirty: false,
+        }));
         const stmts = [];
         for (const raw of items) {
           const name = titleCase(raw.name);
           if (!name) continue;
           const qty = parseQty(raw.qty) || 1;
-          const match = existing.results.find(e => e.name.toLowerCase() === name.toLowerCase());
+          const unit = String(raw.unit || '');
+          const from = String(raw.fromRecipe || 'manual');
+          const key = shopKey(name);
+          const match = live.find(e => e.key === key);
           if (match) {
-            stmts.push(db.prepare('UPDATE shopping_items SET qty=? WHERE id=?')
-              .bind(match.qty + qty, match.id));
+            const folded = foldQty(match, qty, unit);
+            match.qty = folded.qty; match.alt = folded.alt;
+            if (from !== 'manual' && !match.sources.includes(from)) match.sources.push(from);
+            // Once a row is shared, its preparation clause belongs to one recipe
+            // and not the other — "Lemons, Zested and Juiced" is not a thing to
+            // buy six of. Merging drops back to the plain name.
+            if (match.name.includes(',')) match.name = titleCase(match.name.split(',')[0]);
+            match.dirty = true;
           } else {
+            const id = uid();
+            live.push({ id, key, name, qty, unit,
+              sources: from === 'manual' ? [] : [from], alt: [], dirty: false });
             stmts.push(db.prepare(
-              `INSERT INTO shopping_items (id,name,qty,unit,checked,from_recipe,created_at)
-               VALUES (?,?,?,?,0,?,?)`
-            ).bind(uid(), name, qty, String(raw.unit || ''), String(raw.fromRecipe || 'manual'), now()));
-            existing.results.push({ id: 'pending', name, qty });
+              `INSERT INTO shopping_items (id,name,qty,unit,checked,from_recipe,sources,alt,created_at)
+               VALUES (?,?,?,?,0,?,?,?,?)`
+            ).bind(id, name, qty, unit, from,
+              JSON.stringify(from === 'manual' ? [] : [from]), '[]', now()));
           }
+        }
+        for (const e of live.filter(x => x.dirty)) {
+          stmts.push(db.prepare(
+            'UPDATE shopping_items SET qty=?, name=?, sources=?, alt=? WHERE id=?')
+            .bind(e.qty, e.name, JSON.stringify(e.sources), JSON.stringify(e.alt), e.id));
         }
         if (stmts.length) await db.batch(stmts);
         return json(await bootstrap(db), 201);
@@ -1155,6 +1247,15 @@ export default {
             sets.push('qty=?'); vals.push(Math.max(0.01, parseQty(b.qty) || 1));
           }
           if (b.unit !== undefined) { sets.push('unit=?'); vals.push(String(b.unit || '').trim()); }
+          // the client sends alt back when you dismiss a mixed-unit note, having
+          // decided for yourself what the row really needs
+          if (b.alt !== undefined) {
+            sets.push('alt=?');
+            vals.push(JSON.stringify(Array.isArray(b.alt)
+              ? b.alt.filter(a => a && parseQty(a.qty) > 0)
+                  .map(a => ({ qty: parseQty(a.qty), unit: String(a.unit || '') }))
+              : []));
+          }
           if (!sets.length) return err('Nothing to update');
           vals.push(sid);
           await db.prepare(`UPDATE shopping_items SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
