@@ -9,6 +9,7 @@
  *   POST   /api/recipes/:id/cook     increment cook counter + log the cook
  *                                    body: {day} — the cook's LOCAL date
  *   POST   /api/recipes/:id/ratings  add rating + increment cook counter
+ *   PATCH  /api/recipes/:id/notes    save just the notes (see the warning on PUT below)
  *   POST   /api/recipes/:id/photos   upload photo -> R2
  *   DELETE /api/photos/:id           delete photo (promotes a new cover if needed)
  *   POST   /api/photos/:id/cover     make photo the cover
@@ -16,6 +17,7 @@
  *   GET    /api/substitutions        library + recipe-local
  *   POST   /api/substitutions        create
  *   PUT    /api/substitutions/:id    update
+ *   POST   /api/substitutions/:id/promote   move a recipe-only entry into the library
  *   DELETE /api/substitutions/:id    delete
  *   GET    /api/shopping             shopping list
  *   POST   /api/shopping             add one or many items
@@ -153,6 +155,9 @@ async function loadRecipes(db) {
       notes: r.notes || '',
       cookbookId: r.cookbook_id || null,
       cookbookPage: r.cookbook_page || '',
+      // 0 means "not recorded" — the client shows an em dash rather than "0 min"
+      prepMinutes: r.prep_minutes || 0,
+      cookMinutes: r.cook_minutes || 0,
       categories: [],
       tags: [],
       ingredients: [],
@@ -213,7 +218,7 @@ async function loadCookbooks(db) {
 
 async function bootstrap(db) {
   const since = dayKey(Date.now() - 400 * 86400000);   // a full year of history, plus slack
-  const [recipes, subs, shopping, cats, cookbooks, activity, lastCooked] = await Promise.all([
+  const [recipes, subs, shopping, cats, cookbooks, activity, lastCooked, cookMonths] = await Promise.all([
     loadRecipes(db),
     db.prepare('SELECT * FROM substitutions ORDER BY ingredient').all(),
     db.prepare('SELECT * FROM shopping_items ORDER BY created_at').all(),
@@ -222,9 +227,20 @@ async function bootstrap(db) {
     db.prepare(`SELECT cooked_on AS day, COUNT(*) AS n FROM cook_events
                 WHERE cooked_on >= ? GROUP BY cooked_on`).bind(since).all(),
     db.prepare(`SELECT recipe_id, MAX(cooked_at) AS last FROM cook_events GROUP BY recipe_id`).all(),
+    // per-recipe monthly counts, for the little frequency bar on a recipe page
+    db.prepare(`SELECT recipe_id, substr(cooked_on,1,7) AS month, COUNT(*) AS n
+                FROM cook_events GROUP BY recipe_id, month`).all(),
   ]);
   const lastById = new Map(lastCooked.results.map(r => [r.recipe_id, r.last]));
-  for (const r of recipes) r.lastCookedAt = lastById.get(r.id) || null;
+  const monthsById = new Map();
+  for (const row of cookMonths.results) {
+    if (!monthsById.has(row.recipe_id)) monthsById.set(row.recipe_id, {});
+    monthsById.get(row.recipe_id)[row.month] = row.n;
+  }
+  for (const r of recipes) {
+    r.lastCookedAt = lastById.get(r.id) || null;
+    r.cookMonths = monthsById.get(r.id) || {};
+  }
 
   const globalSubs = [];
   const localByRecipe = new Map();
@@ -278,12 +294,20 @@ async function saveRecipe(db, body, existingId) {
   const notes = String(body.notes || '').trim();
   const cookbookId = body.cookbookId ? String(body.cookbookId) : null;
   const cookbookPage = String(body.cookbookPage || '').trim();
+  const minutes = (v) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 60 * 24 * 14) : 0;
+  };
+  const prepMinutes = minutes(body.prepMinutes);
+  const cookMinutes = minutes(body.cookMinutes);
 
   if (existingId) {
     await db.prepare(
       `UPDATE recipes SET title=?, emoji=?, base_servings=?, notes=?,
-                          cookbook_id=?, cookbook_page=?, updated_at=? WHERE id=?`
-    ).bind(title, emoji, baseServings, notes, cookbookId, cookbookPage, ts, id).run();
+                          cookbook_id=?, cookbook_page=?, prep_minutes=?, cook_minutes=?,
+                          updated_at=? WHERE id=?`
+    ).bind(title, emoji, baseServings, notes, cookbookId, cookbookPage,
+           prepMinutes, cookMinutes, ts, id).run();
 
     if (body.timesCooked !== undefined && body.timesCooked !== null) {
       const n = Math.max(0, Math.round(Number(body.timesCooked)));
@@ -294,10 +318,11 @@ async function saveRecipe(db, body, existingId) {
   } else {
     await db.prepare(
       `INSERT INTO recipes (id,title,emoji,base_servings,times_cooked,date_added,
-                            notes,cookbook_id,cookbook_page,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+                            notes,cookbook_id,cookbook_page,prep_minutes,cook_minutes,
+                            created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(id, title, emoji, baseServings, body.timesCooked || 0, dateAdded,
-           notes, cookbookId, cookbookPage, ts, ts).run();
+           notes, cookbookId, cookbookPage, prepMinutes, cookMinutes, ts, ts).run();
   }
 
   const catIds = await categoryIds(db, body.categories || []);
@@ -641,6 +666,19 @@ export default {
           return json(await bootstrap(db));
         }
 
+        /* Notes get their own endpoint on purpose. PUT /api/recipes/:id rebuilds
+           the recipe from the payload — it deletes and reinserts every ingredient,
+           step, tag and category — so a notes-only PUT would silently empty the
+           recipe. This touches one column and nothing else. */
+        if (sub === '/notes' && method === 'PATCH') {
+          const exists = await db.prepare('SELECT id FROM recipes WHERE id=?').bind(id).first();
+          if (!exists) return err('Recipe not found', 404);
+          const b = await readJson(request);
+          await db.prepare('UPDATE recipes SET notes=?, updated_at=? WHERE id=?')
+            .bind(String(b.notes || '').trim(), now(), id).run();
+          return json(await bootstrap(db));
+        }
+
         if (sub === '/cook' && method === 'POST') {
           const ts = now();
           const day = localDay(await readJson(request), request, ts);
@@ -846,6 +884,19 @@ export default {
         ).bind(uid(), b.recipeId || null, ingredient, substitute,
           String(b.notes || '').trim(), now()).run();
         return json(await bootstrap(db), 201);
+      }
+
+      /* Recipe-only entries can graduate. Clearing recipe_id is all it takes —
+         the matcher already treats anything without one as library-wide. */
+      const promoteMatch = path.match(/^\/api\/substitutions\/([^/]+)\/promote$/);
+      if (promoteMatch && method === 'POST') {
+        const sid = promoteMatch[1];
+        const row = await db.prepare('SELECT * FROM substitutions WHERE id=?').bind(sid).first();
+        if (!row) return err('Substitution not found', 404);
+        if (!row.recipe_id) return err('That one is already in your library.');
+        await db.prepare('UPDATE substitutions SET recipe_id=NULL, ingredient=? WHERE id=?')
+          .bind(titleCase(row.ingredient), sid).run();
+        return json(await bootstrap(db));
       }
 
       const subMatch = path.match(/^\/api\/substitutions\/([^/]+)$/);

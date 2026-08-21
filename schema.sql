@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS recipes (
   notes         TEXT NOT NULL DEFAULT '',
   cookbook_id   TEXT,
   cookbook_page TEXT NOT NULL DEFAULT '',
+  prep_minutes  INTEGER NOT NULL DEFAULT 0,
+  cook_minutes  INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
