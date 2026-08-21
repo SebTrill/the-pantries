@@ -8,13 +8,35 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍲</text></svg>">
 <link rel="preload" href="/fonts/bevan-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/petrona-400.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/styles.css?v=2.6">
+<script>
+/* The theme has to be on the root element before the stylesheet paints,
+   otherwise a light-theme user gets a dark page for one frame and a flash as it
+   corrects. This is the only script that runs before the CSS loads; app.js
+   reads the same key and takes over from here. */
+(function () {
+  try {
+    var p = localStorage.getItem('pantries.theme');
+    if (p !== 'dark' && p !== 'light' && p !== 'system') p = 'dark';
+    var t = p === 'system'
+      ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+          ? 'light' : 'dark')
+      : p;
+    document.documentElement.dataset.theme = t;
+    if (t === 'light') {
+      document.querySelector('meta[name="theme-color"]').setAttribute('content', '#EFE5D2');
+    }
+  } catch (e) {
+    document.documentElement.dataset.theme = 'dark';
+  }
+})();
+</script>
+<link rel="stylesheet" href="/styles.css?v=3.1">
 </head>
 <body>
 <div class="app" id="app"></div>
 <div id="modalRoot"></div>
 <div class="toast" id="toast"></div>
 <div class="busy" id="busy"><div class="spinner"></div></div>
-<script src="/app.js?v=2.6"></script>
+<script src="/app.js?v=3.1"></script>
 </body>
 </html>

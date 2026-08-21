@@ -27,6 +27,86 @@ let emojiPalette = { recipe:[], cookbook:[] };
 let scanEnabled = false;
 let userEmail = null;
 
+/* ============ THEME ============
+ * Two palettes over one set of tokens. The preference is 'dark' | 'light' |
+ * 'system'; what actually lands on <html> is only ever 'dark' or 'light', so
+ * the stylesheet needs two blocks rather than two blocks plus a media query
+ * saying the same thing again.
+ *
+ * The choice is per device and per browser, which is what you want — the phone
+ * in a dark kitchen and the laptop by a window are not the same room. It is
+ * read and applied by a few lines inline in index.html so the page never
+ * paints the wrong theme first and corrects itself.
+ */
+const THEMES = [
+  { key:'dark',   label:'Warm press', swatch:'#181209', icon:'🌙' },
+  { key:'light',  label:'Paper',      swatch:'#EFE5D2', icon:'☀️' },
+  { key:'system', label:'Match my system', swatch:'linear-gradient(135deg,#181209 50%,#EFE5D2 50%)', icon:'🌗' },
+];
+const THEME_KEY = 'pantries.theme';
+/* Dark, not system, until you say otherwise. This site has been dark since it
+   existed; defaulting to "match my system" would silently turn it light for
+   anyone whose laptop is in light mode, which is a change nobody asked for.
+   Following the system is one click away and then it is remembered. */
+let themePref = 'dark';
+let themeMenuOpen = false;
+
+function systemTheme(){
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+    ? 'light' : 'dark';
+}
+function resolvedTheme(){ return themePref==='system' ? systemTheme() : themePref; }
+function applyTheme(){
+  const t = resolvedTheme();
+  document.documentElement.dataset.theme = t;
+  // the browser chrome on a phone should match the page it is framing
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if(meta) meta.setAttribute('content', t==='light' ? '#EFE5D2' : '#181209');
+}
+function loadThemePref(){
+  try{
+    const v = localStorage.getItem(THEME_KEY);
+    if(v==='dark'||v==='light'||v==='system') themePref=v;
+  }catch(e){ /* private mode, or storage refused: system is a fine default */ }
+  applyTheme();
+}
+function setTheme(key){
+  themePref = key;
+  try{ localStorage.setItem(THEME_KEY, key); }catch(e){ /* nothing to do */ }
+  themeMenuOpen = false;
+  applyTheme();
+  render();
+  const t = THEMES.find(x=>x.key===key);
+  toast(key==='system' ? `Following your system — currently ${resolvedTheme()==='light'?'light':'dark'}.`
+                       : `Theme: ${t.label}.`);
+}
+function toggleThemeMenu(){ themeMenuOpen=!themeMenuOpen; render(); }
+function renderThemeMenu(){
+  const cur = THEMES.find(t=>t.key===themePref) || THEMES[2];
+  const shown = THEMES.find(t=>t.key===resolvedTheme());
+  return `<div class="thmenu">
+    <button class="themebtn ${themeMenuOpen?'on':''}" title="Choose a theme"
+      aria-haspopup="true" aria-expanded="${themeMenuOpen}"
+      onclick="event.stopPropagation(); toggleThemeMenu()">${shown.icon} Theme ⌄</button>
+    ${themeMenuOpen?`<div class="thpop" onclick="event.stopPropagation()">
+      ${THEMES.map(t=>`<button class="${t.key===themePref?'on':''}" onclick="setTheme('${t.key}')">
+        <span class="sw" style="background:${t.swatch}"></span>${t.label}
+        ${t.key===themePref?'<span class="tick">✓</span>':''}</button>`).join('')}
+      ${themePref==='system'?`<div class="thnote">Currently ${resolvedTheme()==='light'?'light':'dark'}</div>`:''}
+    </div>`:''}
+  </div>`;
+}
+// following the system means following it as it changes, not only at load
+if(window.matchMedia){
+  const mq = window.matchMedia('(prefers-color-scheme: light)');
+  const onChange = ()=>{ if(themePref==='system'){ applyTheme(); render(); } };
+  if(mq.addEventListener) mq.addEventListener('change', onChange);
+  else if(mq.addListener) mq.addListener(onChange);
+}
+document.addEventListener('click', ()=>{
+  if(themeMenuOpen){ themeMenuOpen=false; render(); }
+});
+
 /* ============ API LAYER ============ */
 let busyDepth = 0;
 function setBusy(on){
@@ -417,7 +497,7 @@ function syncUrl(replace){
 const blankRecipeDraft = () => ({
   id:null,title:'',categories:['Dinner'],tags:[],dateAdded:localDay(),
   baseServings:4,emoji:'🍽️',ingredients:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],
-  instructions:[''],ratings:[],timesCooked:0,localSubs:[],images:[],
+  instructions:[''],ratings:[],timesCooked:0,cookDates:[],localSubs:[],images:[],
   notes:'',cookbookId:null,cookbookPage:'',prepMinutes:0,cookMinutes:0,
 });
 const blankBookDraft = () => ({
@@ -514,23 +594,29 @@ function openRecipe(id){
 function render(){
   document.getElementById('app').innerHTML=`
     <div class="topbar no-print">
-      <div class="brand" style="cursor:pointer;" onclick="goto('home')">🍲 The <span>Pantries</span></div>
-      <nav class="topbar-nav">
-        <button class="navbtn ${state.view==='home'?'active':''}" onclick="goto('home')">
-          <span class="ic">🏠</span> Home</button>
-        <button class="navbtn ${['browse','detail','editRecipe'].includes(state.view)?'active':''}" onclick="goto('browse')">
-          <span class="ic">📖</span> Recipes<span class="count">${recipes.length}</span></button>
-        <button class="navbtn ${['cookbooks','cookbookDetail','editCookbook'].includes(state.view)?'active':''}" onclick="goto('cookbooks')">
-          <span class="ic">📚</span> Cookbooks${cookbooks.length?`<span class="count">${cookbooks.length}</span>`:''}</button>
-        <button class="navbtn ${state.view==='substitutions'?'active':''}" onclick="goto('substitutions')">
-          <span class="ic">🔁</span> Substitutions<span class="count">${globalSubs.length}</span></button>
-        <button class="navbtn ${state.view==='shopping'?'active':''}" onclick="goto('shopping')">
-          <span class="ic">🛒</span> Shopping List${shoppingList.length?`<span class="count">${shoppingList.filter(i=>!i.checked).length}</span>`:''}</button>
-      </nav>
+      <!-- an empty twin of .topbar-right: the centred run can only sit on the
+           true centre of the bar if the space either side of it is equal -->
+      <div class="topbar-side" aria-hidden="true"></div>
+      <div class="topbar-mid">
+        <div class="brand" style="cursor:pointer;" onclick="goto('home')">🍲 The <span>Pantries</span></div>
+        <nav class="topbar-nav">
+          <button class="navbtn ${state.view==='home'?'active':''}" onclick="goto('home')">
+            <span class="ic">🏠</span> Home</button>
+          <button class="navbtn ${['browse','detail','editRecipe'].includes(state.view)?'active':''}" onclick="goto('browse')">
+            <span class="ic">📖</span> Recipes<span class="count">${recipes.length}</span></button>
+          <button class="navbtn ${['cookbooks','cookbookDetail','editCookbook'].includes(state.view)?'active':''}" onclick="goto('cookbooks')">
+            <span class="ic">📚</span> Cookbooks${cookbooks.length?`<span class="count">${cookbooks.length}</span>`:''}</button>
+          <button class="navbtn ${state.view==='substitutions'?'active':''}" onclick="goto('substitutions')">
+            <span class="ic">🔁</span> Substitutions<span class="count">${globalSubs.length}</span></button>
+          <button class="navbtn ${state.view==='shopping'?'active':''}" onclick="goto('shopping')">
+            <span class="ic">🛒</span> Shopping List${shoppingList.length?`<span class="count">${shoppingList.filter(i=>!i.checked).length}</span>`:''}</button>
+        </nav>
+        <button class="addbtn" onclick="startAddRecipe()">+ Add Recipe</button>
+      </div>
       <div class="topbar-right">
         <button class="navbtn iconly" title="Download a backup of everything" onclick="downloadBackup()">
           <span class="ic">⬇</span></button>
-        <button class="addbtn" onclick="startAddRecipe()">+ Add Recipe</button>
+        ${renderThemeMenu()}
       </div>
     </div>
     <div class="main" id="main"></div>
@@ -1866,7 +1952,7 @@ function describeEditChanges(){
     cmp('tags','tags'); cmp('baseServings','servings');
     cmp('prepMinutes','prep time'); cmp('cookMinutes','cook time');
     cmp('cookbookId','cookbook'); cmp('cookbookPage','page');
-    cmp('notes','notes'); cmp('timesCooked','times cooked');
+    cmp('notes','notes');
     const countLabel=(a,b,word)=>{
       const d=b.length-a.length;
       return d>0 ? `${d} ${word}${d===1?'':'s'} added`
@@ -1875,6 +1961,9 @@ function describeEditChanges(){
     };
     if(!same('ingredients')) out.push(countLabel(was.ingredients||[], now.ingredients||[], 'ingredient'));
     if(!same('instructions')) out.push(countLabel(was.instructions||[], now.instructions||[], 'step'));
+    // deleting a meal from the record is the least recoverable thing this form
+    // does, so the warning has to name it rather than say "unsaved changes"
+    if(!same('cookDates')) out.push(countLabel(was.cookDates||[], now.cookDates||[], 'cook date'));
   } else {
     cmp('title','title'); cmp('author','author'); cmp('publisher','publisher');
     cmp('published','published'); cmp('edition','edition'); cmp('isbn','ISBN');
@@ -2954,6 +3043,9 @@ function duplicateRecipe(id){
   // original, so a copy starts without them
   copy.timesCooked=0; copy.ratings=[]; copy.images=[]; copy.localSubs=[];
   copy.lastCookedAt=null; copy.cookMonths={};
+  // you have not cooked the copy — those meals belong to the original, and
+  // carrying the dates over would stage them for a second time on save
+  copy.cookDates=[];
   copy.ingredients=(copy.ingredients||[]).map(i=>({...i, id:uid()}));
   state.editing=copy; state.scanSource=null; state.scanImage=null;
   state.view='editRecipe';
@@ -3286,15 +3378,9 @@ function viewEditRecipe(){
     <div class="fsec" style="margin-top:34px;">
       <h2>Record</h2>
       <div class="fsec-body">
-        <div class="record-strip">
-          <div><span class="fl">Times cooked</span>
-            <input type="text" id="f_cooked" value="${e.timesCooked||0}" inputmode="numeric"
-              oninput="stashEditForm()"></div>
-          <div class="record-note">Normally earned one meal at a time. Changing it here rewrites the history
-            behind your Most Cooked rankings, so it asks before saving.</div>
-          ${isNew?'':`<div class="danger-side">
-            <button class="icon-btn danger" onclick="confirmDeleteRecipe('${e.id}')">🗑 Delete this recipe</button></div>`}
-        </div>
+        ${renderCookDates(e)}
+        ${isNew?'':`<div class="danger-side" style="margin-top:20px;">
+          <button class="icon-btn danger" onclick="confirmDeleteRecipe('${e.id}')">🗑 Delete this recipe</button></div>`}
       </div>
     </div>`;
 }
@@ -3345,10 +3431,6 @@ function stashEditForm(){
   if(g('f_prep')) e.prepMinutes=mins(g('f_prep'));
   if(g('f_cook')) e.cookMinutes=mins(g('f_cook'));
   if(g('f_emoji')) e.emoji=g('f_emoji').value||'🍽️';
-  if(g('f_cooked')){
-    const n=parseInt(g('f_cooked').value,10);
-    e.timesCooked = Number.isFinite(n) && n>=0 ? n : 0;
-  }
   if(g('f_tags')) e.tags=g('f_tags').value.split(',').map(t=>t.trim()).filter(Boolean).map(titleCase);
   if(g('f_notes')) e.notes=g('f_notes').value;
   if(g('f_cookbook')) e.cookbookId=g('f_cookbook').value||null;
@@ -3425,31 +3507,82 @@ function removeIng(idx){ stashEditForm(); state.editing.ingredients.splice(idx,1
 function editStep(idx,v){ state.editing.instructions[idx]=v; }
 function addStepRow(){ stashEditForm(); state.editing.instructions.push(''); renderMain(); }
 function removeStep(idx){ stashEditForm(); state.editing.instructions.splice(idx,1); renderMain(); }
-/* Cook count is normally earned one meal at a time, so an edit that changes it
-   asks first — it's easy to fat-finger and impossible to recover afterwards. */
-async function saveEdit(){
+/* ---- the cooks on record ----
+ * This used to be a number you could type. A number can disagree with the
+ * calendar, and did — a recipe could read "cooked once" above an empty
+ * calendar with nothing to say which was true. So the field is the dates
+ * themselves: what is listed here is exactly what the calendar draws, because
+ * both read the same rows.
+ *
+ * Edits are staged in the draft like everything else on this form, so removing
+ * a date you did not mean to remove is undone by hitting Cancel.
+ */
+function renderCookDates(e){
+  const list = (e.cookDates||[]).slice().sort((a,b)=>(b.day||'').localeCompare(a.day||''));
+  const n = list.length;
+  return `<div class="cooklog">
+    <div class="cooklog-head">
+      <span class="fl" style="margin:0;">Cooked ${n} time${n===1?'':'s'}</span>
+      <span class="record-note" style="margin:0;">Every meal on record, and the day it happened. The
+        count on the recipe page and the squares on your calendar are both just this list.</span>
+    </div>
+    ${n===0
+      ? `<div class="cooklog-empty">No cooks on record yet. Hitting <b>I cooked this</b> on the recipe
+          — or rating it — adds one, dated that day.</div>`
+      : `<div class="cookdates">${list.map(c=>`
+          <span class="cookdate${c.id?'':' fresh'}">
+            <b>${esc(prettyDay(c.day))}</b>
+            <button title="Remove this cook" onclick="removeCookDate('${escA(c.key||c.id||c.day)}')">×</button>
+          </span>`).join('')}</div>`}
+    <div class="cookadd no-print">
+      <label class="fl" for="f_cookadd" style="margin:0;">Add one you forgot</label>
+      <input type="date" id="f_cookadd" max="${localDay()}">
+      <button class="icon-btn sm" onclick="addCookDate()">+ Add this date</button>
+    </div>
+  </div>`;
+}
+/** "2026-08-20" → "Thu 20 Aug 2026", read in local time rather than UTC so the
+ *  label can never name the day before the one stored. */
+function prettyDay(day){
+  const m=String(day||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return day||'—';
+  const d=new Date(+m[1], +m[2]-1, +m[3]);
+  return d.toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+}
+function addCookDate(){
+  stashEditForm();
+  const el=document.getElementById('f_cookadd');
+  const day=el?el.value:'';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day)){ toast('Pick a date first.'); return; }
+  if(day>localDay()){ toast('That day has not happened yet.'); return; }
+  const e=state.editing;
+  e.cookDates=e.cookDates||[];
+  // a staged date has no id yet — it gets one when the form saves
+  e.cookDates.push({id:null, day, key:'new:'+uid()});
+  renderMain();
+  toast('Staged — it is recorded when you save.');
+}
+function removeCookDate(key){
   stashEditForm();
   const e=state.editing;
-  const original = e.id ? recipes.find(r=>r.id===e.id) : null;
-  const was = original ? (original.timesCooked||0) : 0;
-  const now = e.timesCooked||0;
-  if(original && now !== was){
-    showModal({
-      title:'Change the cook count?',
-      body:`<b>${esc(original.title)}</b> is recorded as cooked <b>${was} time${was===1?'':'s'}</b>.
-        You're changing that to <b>${now} time${now===1?'':'s'}</b>.<br><br>
-        This rewrites the history behind your Most Cooked rankings, and the old number isn't recoverable.
-        Everything else on the form saves either way.`,
-      buttons:[
-        {label:'Keep it at '+was, action:()=>{ e.timesCooked = was; commitEdit(); }},
-        {label:'Cancel'},
-        {label:`Change to ${now}`, style:'primary', action:commitEdit},
-      ]
-    });
-    return;
-  }
-  commitEdit();
+  e.cookDates=(e.cookDates||[]).filter(c=>(c.key||c.id||c.day)!==key);
+  renderMain();
 }
+
+async function saveEdit(){ stashEditForm(); commitEdit(); }
+/** Send the staged cook-date changes once the recipe itself has saved. Removals
+ *  are worked out by comparing against what the server last told us, so a date
+ *  someone else's tab added while this form was open is not silently deleted. */
+async function applyCookDateEdits(id, e){
+  const original = recipes.find(r=>r.id===id);
+  const before = new Set(((original&&original.cookDates)||[]).map(c=>c.id));
+  const after  = new Set((e.cookDates||[]).map(c=>c.id).filter(Boolean));
+  const removed = [...before].filter(x=>!after.has(x));
+  const added   = (e.cookDates||[]).filter(c=>!c.id).map(c=>c.day);
+  for(const cid of removed) await apiJSON('/api/cook-events/'+cid,'DELETE');
+  for(const day of added)   await apiJSON('/api/recipes/'+id+'/cook-dates','POST',{day});
+}
+
 async function commitEdit(){
   const e=state.editing;
   if(!e) return;
@@ -3467,7 +3600,6 @@ async function commitEdit(){
     cookbookPage:e.cookbookPage||'',
     prepMinutes:e.prepMinutes||0,
     cookMinutes:e.cookMinutes||0,
-    timesCooked:e.timesCooked||0,
     ingredients:e.ingredients.filter(i=>String(i.name||'').trim())
       .map(i=>({qtyRaw:i.qtyRaw!=null?String(i.qtyRaw):String(i.qty||''), unit:i.unit||'', name:i.name})),
     instructions:e.instructions.filter(s=>String(s||'').trim()),
@@ -3477,6 +3609,7 @@ async function commitEdit(){
     const res = e.id ? await apiJSON('/api/recipes/'+e.id,'PUT',payload)
                      : await apiJSON('/api/recipes','POST',payload);
     const id = e.id || res.id;
+    await applyCookDateEdits(id, e);
     // keep the scanned page with the recipe so you can always check the source
     if(scan && scan.image) await uploadPhotoDataUrl(id, scan.image, 'Original scan');
     clearEditDraft();
@@ -4000,6 +4133,7 @@ function viewShopping(){
 
 /* ============ BOOT ============ */
 async function boot(){
+  loadThemePref();
   render();
   try{
     const [state0, me] = await Promise.all([
