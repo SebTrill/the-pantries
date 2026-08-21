@@ -1,6 +1,22 @@
 /* ============ STORE (loaded from the server) ============ */
 const uid = () => Math.random().toString(36).slice(2,9);
 
+/* ============ DATES ============
+ * toISOString() is UTC. Used for calendar days it silently files an evening
+ * meal under tomorrow — the cook happened at 7pm here, midnight there. Every
+ * day-key in the app is built from the local clock instead, and the cook log
+ * sends this same string to the server so both ends agree.
+ */
+const pad2 = n => String(n).padStart(2,'0');
+function localDay(d){
+  const x = d ? new Date(d) : new Date();
+  return x.getFullYear()+'-'+pad2(x.getMonth()+1)+'-'+pad2(x.getDate());
+}
+function localMonth(d){
+  const x = d ? new Date(d) : new Date();
+  return x.getFullYear()+'-'+pad2(x.getMonth()+1);
+}
+
 let recipes = [];
 let cookbooks = [];
 let activity = [];
@@ -47,7 +63,7 @@ function applyState(st){
  */
 let lastSig = '';
 let lastFetchAt = 0;
-let lastDay = new Date().toISOString().slice(0,10);
+let lastDay = localDay();
 const REFRESH_MIN_GAP = 15000;
 
 const sigOf = st => JSON.stringify(
@@ -73,7 +89,7 @@ async function backgroundRefresh(force){
   } catch (e) {
     return;                                       // offline or a blip: keep showing what we have
   }
-  const today = new Date().toISOString().slice(0,10);
+  const today = localDay();
   const rolledOver = today !== lastDay;           // left open past midnight
   if (sigOf(st) === lastSig && !rolledOver) return;
   lastDay = today;
@@ -128,13 +144,14 @@ function downloadBackup(){ window.location.href = '/api/export'; }
 /* ============ STATE ============ */
 let state = {
   view:'home', currentRecipeId:null, currentBookId:null, editingBook:null,
-  bookSearch:'', bookRecipeSearch:'', detailTab:'ingredients', activityRange:'1y',
+  bookSearch:'', bookRecipeSearch:'', detailTab:'ingredients', activityRange:'6m',
   pantry:[], tonightId:null,
   searchQuery:'', categoryFilter:'all', sortBy:'newest',
   subSearch:'', scale:{}, editing:null, starDraft:0,
   appliedSubs:{},        // recipeId -> { ingredientId: {ingredientName, substitute, notes} }
   expandedShopSubs:{},   // shoppingItemId -> bool
   showRecipeSubForm:false,
+  collapsed:{},          // home sections folded away — deliberately memory-only
 };
 let focusId=null, focusPos=null;
 
@@ -327,6 +344,97 @@ function toast(msg){
   toastTimer=setTimeout(()=>{ t.className='toast'; },2200);
 }
 
+/* ============ ROUTING ============
+ * Every view is a real page: /home, /browse-recipes, /recipe?id=…, and so on.
+ * Back, forward, refresh and bookmarks all behave the way they look like they
+ * should, and a link to a recipe is a link to that recipe.
+ *
+ * The URL is derived from state, never the reverse. render() calls syncUrl()
+ * at the end, so the address bar follows automatically wherever the app goes
+ * without every navigation having to remember to update it.
+ */
+let routeReady = false;      // stays false until the first load has data to route with
+
+function urlForState(){
+  const q = id => '?id=' + encodeURIComponent(id);
+  switch(state.view){
+    case 'home':           return '/home';
+    case 'browse':         return '/browse-recipes';
+    case 'detail':         return state.currentRecipeId ? '/recipe'+q(state.currentRecipeId) : '/browse-recipes';
+    case 'editRecipe':     return (state.editing && state.editing.id)
+                                  ? '/recipe/edit'+q(state.editing.id) : '/add-recipe';
+    case 'scanning':       return '/add-recipe';
+    case 'cookbooks':      return '/browse-cookbooks';
+    case 'cookbookDetail': return state.currentBookId ? '/cookbook'+q(state.currentBookId) : '/browse-cookbooks';
+    case 'editCookbook':   return (state.editingBook && state.editingBook.id)
+                                  ? '/cookbook/edit'+q(state.editingBook.id) : '/cookbook/edit';
+    case 'shopping':       return '/shopping-list';
+    case 'substitutions':  return '/substitutions';
+    default:               return '/home';
+  }
+}
+function syncUrl(replace){
+  if(!routeReady) return;
+  const next = urlForState();
+  if(next === location.pathname + location.search) return;
+  try{ history[replace?'replaceState':'pushState']({v:state.view}, '', next); }catch(e){}
+}
+const blankRecipeDraft = () => ({
+  id:null,title:'',categories:['Dinner'],tags:[],dateAdded:localDay(),
+  baseServings:4,emoji:'🍽️',ingredients:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],
+  instructions:[''],ratings:[],timesCooked:0,localSubs:[],images:[],
+  notes:'',cookbookId:null,cookbookPage:'',
+});
+const blankBookDraft = () => ({
+  id:null,title:'',author:'',publisher:'',published:'',edition:'',isbn:'',notes:'',emoji:'📕',
+});
+/** Read the address bar into view state. Anything unrecognised lands on Home. */
+function applyUrl(){
+  const path = location.pathname.replace(/\/+$/,'') || '/';
+  const id = new URLSearchParams(location.search).get('id');
+  state.showRecipeSubForm = false;
+
+  if(path === '/recipe' && id){
+    state.view='detail'; state.currentRecipeId=id; state.detailTab='ingredients';
+    if(!state.scale[id]) state.scale[id]=1;
+    return;
+  }
+  if(path === '/recipe/edit'){
+    const r = id && recipes.find(x=>x.id===id);
+    if(r){ state.editing=JSON.parse(JSON.stringify(r)); state.scanSource=null; state.scanImage=null;
+           state.view='editRecipe'; return; }
+    state.view='browse'; return;                       // stale link to a deleted recipe
+  }
+  if(path === '/add-recipe'){
+    // arriving here directly means you already chose to type one in
+    if(!state.editing || state.editing.id) state.editing = blankRecipeDraft();
+    state.scanSource=null; state.scanImage=null; state.view='editRecipe'; return;
+  }
+  if(path === '/cookbook' && id){ state.view='cookbookDetail'; state.currentBookId=id; return; }
+  if(path === '/cookbook/edit'){
+    const b = id && cookbooks.find(x=>x.id===id);
+    state.editingBook = b ? JSON.parse(JSON.stringify(b)) : blankBookDraft();
+    state.view='editCookbook'; return;
+  }
+  const simple = {
+    '/':'home', '/home':'home', '/index.html':'home',
+    '/browse-recipes':'browse', '/recipe':'browse',
+    '/browse-cookbooks':'cookbooks', '/cookbook':'cookbooks',
+    '/shopping-list':'shopping', '/substitutions':'substitutions',
+  };
+  state.view = simple[path] || 'home';
+}
+/* Back/forward can't pop a confirmation dialog without fighting the history
+   stack, so temporary substitutions are simply reverted and called out. */
+window.addEventListener('popstate', ()=>{
+  const rid = state.currentRecipeId;
+  const hadSubs = state.view==='detail' && rid && appliedCount(rid)>0;
+  if(hadSubs) delete state.appliedSubs[rid];
+  applyUrl();
+  render();
+  if(hadSubs) toast('Temporary substitutions reverted.');
+});
+
 /* ============ NAV (with unsaved-substitution guard) ============ */
 function appliedCount(recipeId){ return Object.keys(state.appliedSubs[recipeId]||{}).length; }
 function attemptNav(fn){
@@ -356,16 +464,18 @@ function render(){
   document.getElementById('app').innerHTML=`
     <div class="topbar no-print">
       <div class="brand" style="cursor:pointer;" onclick="goto('home')">🍲 The <span>Pantries</span></div>
-      <button class="navbtn ${state.view==='home'?'active':''}" onclick="goto('home')">
-        <span class="ic">🏠</span> Home</button>
-      <button class="navbtn ${['browse','detail','editRecipe'].includes(state.view)?'active':''}" onclick="goto('browse')">
-        <span class="ic">📖</span> Browse Recipes<span class="count">${recipes.length}</span></button>
-      <button class="navbtn ${['cookbooks','cookbookDetail','editCookbook'].includes(state.view)?'active':''}" onclick="goto('cookbooks')">
-        <span class="ic">📚</span> Cookbooks${cookbooks.length?`<span class="count">${cookbooks.length}</span>`:''}</button>
-      <button class="navbtn ${state.view==='substitutions'?'active':''}" onclick="goto('substitutions')">
-        <span class="ic">🔁</span> Substitutions<span class="count">${globalSubs.length}</span></button>
-      <button class="navbtn ${state.view==='shopping'?'active':''}" onclick="goto('shopping')">
-        <span class="ic">🛒</span> Shopping List${shoppingList.length?`<span class="count">${shoppingList.filter(i=>!i.checked).length}</span>`:''}</button>
+      <nav class="topbar-nav">
+        <button class="navbtn ${state.view==='home'?'active':''}" onclick="goto('home')">
+          <span class="ic">🏠</span> Home</button>
+        <button class="navbtn ${['browse','detail','editRecipe'].includes(state.view)?'active':''}" onclick="goto('browse')">
+          <span class="ic">📖</span> Recipes<span class="count">${recipes.length}</span></button>
+        <button class="navbtn ${['cookbooks','cookbookDetail','editCookbook'].includes(state.view)?'active':''}" onclick="goto('cookbooks')">
+          <span class="ic">📚</span> Cookbooks${cookbooks.length?`<span class="count">${cookbooks.length}</span>`:''}</button>
+        <button class="navbtn ${state.view==='substitutions'?'active':''}" onclick="goto('substitutions')">
+          <span class="ic">🔁</span> Substitutions<span class="count">${globalSubs.length}</span></button>
+        <button class="navbtn ${state.view==='shopping'?'active':''}" onclick="goto('shopping')">
+          <span class="ic">🛒</span> Shopping List${shoppingList.length?`<span class="count">${shoppingList.filter(i=>!i.checked).length}</span>`:''}</button>
+      </nav>
       <div class="topbar-right">
         <button class="navbtn iconly" title="Download a backup of everything" onclick="downloadBackup()">
           <span class="ic">⬇</span></button>
@@ -378,6 +488,7 @@ function render(){
       <a href="#" onclick="event.preventDefault();downloadBackup();" style="color:var(--ochre);">Download backup</a>
     </div>`;
   renderMain();
+  syncUrl();
 }
 function renderMain(){
   const m=document.getElementById('main');
@@ -388,6 +499,33 @@ function renderMain(){
 }
 
 /* ============ HOME ============ */
+/* ---------- collapsible sections ----------
+ * Folding a section away is a decluttering move for the session you're in, not
+ * a preference. It lives in memory only — no storage, no cookie — so opening
+ * the site again always starts with everything visible.
+ */
+function toggleSection(key){ state.collapsed[key]=!state.collapsed[key]; renderMain(); }
+function isCollapsed(key){ return !!state.collapsed[key]; }
+/** A section header that folds its own body away. `extra` is hidden while
+ *  collapsed, since controls for something you can't see are just noise. */
+function secHead(key, title, extra){
+  const off=isCollapsed(key);
+  return `<div class="sec-head${off?' folded':''}">
+    <h2 class="foldable" onclick="toggleSection('${key}')" role="button" tabindex="0"
+      aria-expanded="${!off}" title="${off?'Show this section':'Hide this section'}"
+      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleSection('${key}');}"
+      ><span class="caret">${off?'▸':'▾'}</span>${title}</h2>
+    ${off?'':(extra||'')}</div>`;
+}
+function sideHead(key, title, sub){
+  const off=isCollapsed(key);
+  return `<h3 class="foldable" onclick="toggleSection('${key}')" role="button" tabindex="0"
+      aria-expanded="${!off}" title="${off?'Show this section':'Hide this section'}"
+      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleSection('${key}');}"
+      ><span class="caret">${off?'▸':'▾'}</span>${title}</h3>
+    ${off?'':`<div class="side-sub">${sub}</div>`}`;
+}
+
 function mostCooked(n=3){
   return recipes.slice().sort((a,b)=>b.timesCooked-a.timesCooked || avgRating(b)-avgRating(a)).slice(0,n);
 }
@@ -422,12 +560,12 @@ function lastSixMonthKeys(){
   const out=[], now=new Date();
   for(let i=5;i>=0;i--){
     const d=new Date(now.getFullYear(), now.getMonth()-i, 1);
-    out.push(d.toISOString().slice(0,7));
+    out.push(localMonth(d));
   }
   return out;
 }
 function cooksInLastDays(n){
-  const cutoff = new Date(Date.now()-n*86400000).toISOString().slice(0,10);
+  const cutoff = localDay(Date.now()-n*86400000);
   return (activity||[]).filter(a=>a.day>=cutoff).reduce((t,a)=>t+a.n,0);
 }
 function sparkBars(values){
@@ -499,8 +637,9 @@ function renderTonight(){
   if(!r) return '';
   const cover = coverImage(r);
   return `
-    <div class="sec-head"><h2>🍽️ Cook this tonight</h2>
-      <button class="link" onclick="rerollTonight()">🎲 Roll again</button></div>
+    ${secHead('tonight','🍽️ Cook this tonight',
+      `<button class="link" onclick="rerollTonight()">🎲 Roll again</button>`)}
+    ${isCollapsed('tonight')?'':`
     <div class="tonight">
       <div class="t-img" onclick="openRecipe('${r.id}')">${cover
         ? `<img src="${cover.url}" alt="${escA(r.title)}" style="${focalStyle(cover)}">`
@@ -513,7 +652,7 @@ function renderTonight(){
           <button class="icon-btn" onclick="addRecipeToShoppingList('${r.id}')">🛒 Add ingredients</button>
         </div>
       </div>
-    </div>`;
+    </div>`}`;
 }
 
 /* ---------- pantry matcher ---------- */
@@ -541,8 +680,9 @@ function pantryMatches(){
 }
 function renderPantry(){
   const matches=pantryMatches();
+  if(isCollapsed('pantry')) return secHead('pantry',"🥫 What's in your pantry");
   return `
-    <div class="sec-head"><h2 style="font-size:17px;">🥫 What's in your pantry</h2></div>
+    ${secHead('pantry',"🥫 What's in your pantry")}
     <div class="pantry-box">
       <div class="subtle" style="margin:0 0 10px;font-size:12.5px;">
         List what you have on hand and see what it gets you.</div>
@@ -581,8 +721,9 @@ function renderCategoryChart(){
   recipes.forEach(r=>r.categories.forEach(c=>counts.set(c,(counts.get(c)||0)+1)));
   const rows=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,7);
   const max=Math.max(1,...rows.map(r=>r[1]));
+  if(isCollapsed('categories')) return secHead('categories','📊 Recipes by category');
   return `
-    <div class="sec-head"><h2 style="font-size:17px;">📊 Recipes by category</h2></div>
+    ${secHead('categories','📊 Recipes by category')}
     <div class="panel">
       ${rows.length===0?`<div class="empty" style="padding:12px 0;font-size:13px;">No categories yet.</div>`
       :`<div class="barchart">${rows.map(([name,n])=>`
@@ -611,7 +752,7 @@ function cookStreakWeeks(map){
     let any=false;
     for(let d=0; d<7; d++){
       const day=new Date(end); day.setDate(day.getDate()-d);
-      if(map.get(day.toISOString().slice(0,10))) { any=true; break; }
+      if(map.get(localDay(day))) { any=true; break; }
     }
     if(any) streak++; else break;
   }
@@ -651,7 +792,7 @@ function renderActivity(){
     let cells='';
     for(let d=0; d<7; d++){
       const day=new Date(colStart); day.setDate(day.getDate()+d);
-      const key=day.toISOString().slice(0,10);
+      const key=localDay(day);
       const n=map.get(key)||0;
       const future=day>today;
       if(!future){ inRange+=n; if(n) daysWithCooking++; }
@@ -668,11 +809,12 @@ function renderActivity(){
   const totalAll=[...map.values()].reduce((a,b)=>a+b,0);
 
   return `
-    <div class="sec-head"><h2>📅 Cooking activity</h2>
-      <div class="range-group no-print">
+    ${secHead('activity','📅 Cooking activity',
+      `<div class="range-group no-print">
         ${ACTIVITY_RANGES.map(r=>`<button class="range-btn ${r.key===range.key?'on':''}"
           onclick="setActivityRange('${r.key}')">${r.label}</button>`).join('')}
-      </div></div>
+      </div>`)}
+    ${isCollapsed('activity')?'':`
     <div class="panel" style="margin-bottom:32px;">
       ${totalAll===0?`<div class="empty" style="padding:10px 0 18px;">
         Nothing logged yet. Every time you hit <b>I cooked this</b> or rate a recipe from now on,
@@ -696,7 +838,7 @@ function renderActivity(){
         <span>More</span>
         ${streak>0?`<span class="streak">🔥 ${streak}-week streak</span>`:''}
       </div>
-    </div>`;
+    </div>`}`;
 }
 
 /* ---------- cookbook shelf ---------- */
@@ -706,9 +848,10 @@ function renderShelf(){
   const tones=['linear-gradient(155deg,#8E3E23,#4A1F11)','linear-gradient(155deg,#5C6640,#2C3320)',
     'linear-gradient(155deg,#8A6524,#463314)','linear-gradient(155deg,#6B4430,#372117)',
     'linear-gradient(155deg,#4A3A55,#241C2B)'];
+  if(isCollapsed('shelf')) return secHead('shelf','📚 Your shelf');
   return `
-    <div class="sec-head"><h2>📚 Your shelf</h2>
-      <button class="link" onclick="goto('cookbooks')">All cookbooks →</button></div>
+    ${secHead('shelf','📚 Your shelf',
+      `<button class="link" onclick="goto('cookbooks')">All cookbooks →</button>`)}
     <div class="shelf">
       ${cookbooks.map((b,i)=>{
         const cover=bookCover(b), n=recipesInBook(b.id).length;
@@ -735,9 +878,10 @@ function tidyItems(){
 function renderTidy(){
   const items=tidyItems();
   if(!items.length) return '';
+  if(isCollapsed('tidy')) return secHead('tidy','✨ Needs a little love');
   return `
-    <div class="sec-head"><h2>✨ Needs a little love</h2>
-      <span class="subtle" style="margin:0;">tidy-up suggestions</span></div>
+    ${secHead('tidy','✨ Needs a little love',
+      `<span class="subtle" style="margin:0;">tidy-up suggestions</span>`)}
     <div class="panel" style="margin-bottom:32px;">
       ${items.map(t=>`<div class="tidy">
         <span class="t-tag">${t.tag}</span>
@@ -779,19 +923,20 @@ function viewHome(){
 
     <div class="home-grid">
       <div>
-        ${renderTonight()}
+        <div class="home-sec">
+          ${secHead('mostCooked','🔥 Most Cooked',
+            `<button class="link" onclick="state.searchQuery='';state.sortBy='mostUsed';goto('browse')">See all →</button>`)}
+          ${isCollapsed('mostCooked')?''
+            :cooked.length?`<div class="grid">${cooked.map((r,i)=>rankedCard(r,i)).join('')}</div>`
+            :`<div class="empty">Cook something and it'll show up here.</div>`}
+        </div>
 
         <div class="split-2">
           <div>${renderPantry()}</div>
           <div>${renderCategoryChart()}</div>
         </div>
 
-        <div class="home-sec">
-          <div class="sec-head"><h2>🔥 Most Cooked</h2>
-            <button class="link" onclick="state.searchQuery='';state.sortBy='mostUsed';goto('browse')">See all →</button></div>
-          ${cooked.length?`<div class="grid">${cooked.map((r,i)=>rankedCard(r,i)).join('')}</div>`
-            :`<div class="empty">Cook something and it'll show up here.</div>`}
-        </div>
+        ${renderTonight()}
 
         ${renderActivity()}
         ${renderShelf()}
@@ -800,9 +945,8 @@ function viewHome(){
 
       <div>
         <div class="side-card">
-          <h3>💬 Latest Ratings &amp; Comments</h3>
-          <div class="side-sub">Newest activity across all your recipes</div>
-          ${feed.length?feed.map(f=>{
+          ${sideHead('feed','💬 Latest Ratings &amp; Comments','Newest activity across all your recipes')}
+          ${isCollapsed('feed')?'':feed.length?feed.map(f=>{
             const cov=coverImage(f.r);
             return `<div class="feed-item">
               <div class="feed-top">
@@ -819,9 +963,8 @@ function viewHome(){
         </div>
 
         <div class="side-card">
-          <h3>🏆 Top 10 Recipes</h3>
-          <div class="side-sub">Ranked by rating, then times cooked</div>
-          ${top.map((r,i)=>`
+          ${sideHead('top10','🏆 Top 10 Recipes','Ranked by rating, then times cooked')}
+          ${isCollapsed('top10')?'':top.map((r,i)=>`
             <div class="top-item">
               <span class="rank ${i<3?'gold':''}">${i+1}</span>
               <div style="min-width:0;flex:1;">
@@ -1001,7 +1144,7 @@ function viewCookbookDetail(){
 
 function startAddCookbook(){
   attemptNav(()=>{
-    state.editingBook={id:null,title:'',author:'',publisher:'',published:'',edition:'',isbn:'',notes:'',emoji:'📕'};
+    state.editingBook=blankBookDraft();
     state.view='editCookbook'; render();
   });
 }
@@ -1131,7 +1274,7 @@ function confirmDeleteBookFile(bookId,fileId){
 function viewBrowse(){
   const list=filteredSorted();
   return `
-    <h1 class="title">Browse Recipes</h1>
+    <h1 class="title">Recipes</h1>
     <p class="subtle">${recipes.length} recipes in your pantry</p>
     <div class="controls">
       <div class="search-wrap"><span class="sicon">🔍</span>
@@ -1211,7 +1354,7 @@ function setTab(t){ state.detailTab=t; state.showRecipeSubForm=false; renderMain
 function setScale(id,m){ state.scale[id]=m; renderMain(); }
 async function logCooked(id){
   try{
-    await apiJSON('/api/recipes/'+id+'/cook','POST');
+    await apiJSON('/api/recipes/'+id+'/cook','POST',{day:localDay()});
     const r=recipes.find(x=>x.id===id);
     const n=r?r.timesCooked:0;
     render(); toast(`Logged! You've cooked this ${n} time${n===1?'':'s'}.`);
@@ -1459,7 +1602,7 @@ async function submitRating(id){
   const c=document.getElementById('commentDraft').value.trim();
   const stars=state.starDraft||5;
   try{
-    await apiJSON('/api/recipes/'+id+'/ratings','POST',{stars,comment:c});
+    await apiJSON('/api/recipes/'+id+'/ratings','POST',{stars,comment:c,day:localDay()});
     state.starDraft=0;
     render(); toast('Rating saved — cook count updated.');
   }catch(e){ apiError(e); }
@@ -1604,7 +1747,7 @@ function applyScanResult(res){
   state.editing={
     id:null, title:r.title||'Untitled Recipe',
     categories:(r.categories&&r.categories.length)?r.categories:['Dinner'],
-    tags:r.tags||[], dateAdded:new Date().toISOString().slice(0,10),
+    tags:r.tags||[], dateAdded:localDay(),
     baseServings:r.baseServings||4, emoji:r.emoji||'🍽️',
     ratings:[], timesCooked:0, localSubs:[], images:[],
     notes:'', cookbookId:null, cookbookPage:'',
@@ -1631,9 +1774,7 @@ function viewScanning(){
 function startManualRecipe(){
   attemptNav(()=>{
     state.scanSource=null; state.scanImage=null;
-    state.editing={id:null,title:'',categories:['Dinner'],tags:[],dateAdded:new Date().toISOString().slice(0,10),
-      baseServings:4,emoji:'🍽️',ingredients:[{id:uid(),qty:1,qtyRaw:'1',unit:'',name:''}],instructions:[''],
-      ratings:[],timesCooked:0,localSubs:[],images:[],notes:'',cookbookId:null,cookbookPage:''};
+    state.editing=blankRecipeDraft();
     state.view='editRecipe'; render();
   });
 }
@@ -1980,20 +2121,59 @@ async function swapShopItem(id,subId){
     render(); toast(`Swapped to "${s.substitute}" on your list.`);
   }catch(e){ apiError(e); }
 }
+/* How many to buy. Quantities accept the same fractions ingredients do, so
+   "1 1/2" and "½" are as valid here as "2". */
+async function setShopQty(id, val){
+  const it=shoppingList.find(s=>s.id===id);
+  if(!it) return;
+  const q=parseQty(val);
+  if(!q || q<=0){ renderMain(); toast('Enter an amount like 2, 1/2 or 1 1/2.'); return; }
+  const was=it.qty;
+  it.qty=q; renderMain();                          // optimistic: a stepper must feel instant
+  try{ await apiJSON('/api/shopping/'+id,'PATCH',{qty:q}); renderMain(); }
+  catch(e){ it.qty=was; renderMain(); apiError(e); }
+}
+function bumpShopQty(id, dir){
+  const it=shoppingList.find(s=>s.id===id);
+  if(!it) return;
+  const cur=it.qty||1;
+  // under 1 the useful step is a quarter — "half a cup" is a real amount to buy
+  const step=(dir>0 ? (cur<1?0.25:1) : (cur<=1?0.25:1))*dir;
+  const next=Math.max(0.25, Math.round((cur+step)*100)/100);
+  if(next===cur) return;
+  setShopQty(id, String(next));
+}
+async function setShopUnit(id, val){
+  const it=shoppingList.find(s=>s.id===id);
+  if(!it || String(val).trim()===(it.unit||'')) return;
+  try{ await apiJSON('/api/shopping/'+id,'PATCH',{unit:String(val).trim()}); renderMain(); }
+  catch(e){ apiError(e); }
+}
 async function addManualShopItem(){
   const el=document.getElementById('manualItem'); const v=titleCase(el.value);
-  if(!v) return;
+  if(!v){ el.focus(); return; }
+  const qEl=document.getElementById('manualQty');
+  const uEl=document.getElementById('manualUnit');
+  const qty=parseQty(qEl?qEl.value:1)||1;
+  const unit=uEl?uEl.value.trim():'';
   try{
-    await apiJSON('/api/shopping','POST',{name:v,qty:1,fromRecipe:'manual'});
-    render(); toast('Item added.');
+    await apiJSON('/api/shopping','POST',{name:v,qty,unit,fromRecipe:'manual'});
+    render(); toast(`Added ${fmtQty(qty)}${unit?' '+unit:''} ${v}.`);
   }catch(e){ apiError(e); }
 }
 function viewShopping(){
   return `
     <h1 class="title">Shopping List</h1>
-    <p class="subtle">Ingredients pulled from recipes, plus anything you add by hand. Each item shows substitutions from your library.</p>
+    <p class="subtle">Ingredients pulled from recipes, plus anything you add by hand. Set how many of
+      each you want with the − and + steppers, and each item shows substitutions from your library.</p>
     <div class="controls no-print">
-      <div class="search-wrap" style="flex:2;"><input id="manualItem" type="text" placeholder="Add an item manually, e.g. olive oil" style="padding-left:14px;"></div>
+      <div class="search-wrap" style="flex:2;"><input id="manualItem" type="text"
+        placeholder="Add an item manually, e.g. olive oil" style="padding-left:14px;"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();addManualShopItem();}"></div>
+      <input id="manualQty" class="add-qty" type="text" value="1" title="How many to buy"
+        aria-label="How many" onkeydown="if(event.key==='Enter'){event.preventDefault();addManualShopItem();}">
+      <input id="manualUnit" class="add-unit" type="text" placeholder="unit" title="Optional unit"
+        aria-label="Unit" onkeydown="if(event.key==='Enter'){event.preventDefault();addManualShopItem();}">
       <button class="icon-btn primary" onclick="addManualShopItem()">+ Add</button>
       <button class="icon-btn" onclick="window.print()">🖨️ Print list</button>
       <button class="icon-btn" onclick="clearChecked()">Clear checked</button>
@@ -2005,8 +2185,18 @@ function viewShopping(){
       return `<div class="shop-item ${it.checked?'checked':''}">
         <div class="shop-row">
           <input type="checkbox" ${it.checked?'checked':''} onchange="toggleShopItem('${it.id}')">
-          <div>
-            <div class="sname">${fmtQty(it.qty)} ${esc(it.unit)} ${esc(it.name)}</div>
+          <div class="qbox no-print">
+            <button class="qstep" title="One fewer" onclick="bumpShopQty('${it.id}',-1)">−</button>
+            <input class="qin" type="text" value="${escA(fmtQty(it.qty))}" aria-label="How many"
+              onchange="setShopQty('${it.id}',this.value)"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+            <input class="uin" type="text" value="${escA(it.unit||'')}" placeholder="unit" aria-label="Unit"
+              onchange="setShopUnit('${it.id}',this.value)"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+            <button class="qstep" title="One more" onclick="bumpShopQty('${it.id}',1)">+</button>
+          </div>
+          <div style="min-width:0;">
+            <div class="sname"><span class="print-only">${fmtQty(it.qty)} ${esc(it.unit)} </span>${esc(it.name)}</div>
             <div class="sfrom">${it.fromRecipe==='manual'?'added manually':'from '+esc(it.fromRecipe)}${it.origName?` · swapped from ${esc(it.origName)}`:''}</div>
           </div>
           <div class="store-links no-print">
@@ -2035,6 +2225,9 @@ async function boot(){
     applyState(state0);
     scanEnabled = !!(me && me.scanEnabled);
     userEmail = (me && me.email) || null;
+    applyUrl();            // deep links need the data before they can resolve an id
+    routeReady = true;
+    syncUrl(true);         // normalise "/" to "/home" without adding a history entry
     render();
   }catch(e){
     document.getElementById('app').innerHTML =
