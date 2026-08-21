@@ -383,7 +383,7 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
 .qstep:hover{background:var(--ochre);color:#221A11}
 .qbox .qin{width:46px;height:32px;border:none;background:none;color:var(--cream);text-align:center;
   font-family:var(--mono);font-size:13px;padding:0 2px}
-.qbox .uin{width:52px;height:32px;border:none;border-left:1px solid var(--rule-soft);background:none;
+.qbox .uin{width:66px;height:32px;border:none;border-left:1px solid var(--rule-soft);background:none;
   color:var(--dim);font-family:var(--mono);font-size:11px;padding:0 6px}
 .qbox .qin:focus,.qbox .uin:focus{outline:none;background:rgba(217,164,65,.12);color:var(--cream)}
 .qbox .uin::placeholder{color:var(--faint)}
@@ -404,6 +404,97 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
 .shop-subs{margin-top:9px;padding:11px 13px;background:var(--sage-soft);border:1px solid rgba(126,138,87,.25);
   border-radius:var(--radius);font-size:14px}
 .shop-subs .srow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 0}
+
+/* header: title, how far along you are, and how the list is grouped */
+.shop-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.shop-head h1{margin:0}
+.shop-head .right{margin-left:auto}
+.progress{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);display:flex;align-items:center;gap:10px}
+.progress b{color:var(--ochre);font-weight:400}
+.pbar{width:110px;height:5px;background:var(--raise);border-radius:3px;overflow:hidden;display:block}
+.pbar span{display:block;height:100%;background:var(--olive);border-radius:3px;transition:width .25s}
+
+/* an aisle of the shop — the heading is the section you are standing in */
+.aisle{margin-bottom:22px}
+.aisle-head{display:flex;align-items:baseline;gap:10px;padding-bottom:7px;margin-bottom:9px;
+  border-bottom:2px solid var(--rule)}
+.aisle-head h2{font-family:var(--display);font-size:12.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--ochre);margin:0}
+.aisle-head .n{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
+  color:var(--faint)}
+/* Inside an aisle the section is the container, so each row drops its own card
+   chrome and is separated by a rule instead. Twenty-one bordered boxes read as
+   twenty-one things to deal with; twenty-one lines under five headings read as
+   five. */
+.aisle .shop-item{background:none;border:none;border-radius:0;padding:9px 6px;margin:0;
+  border-bottom:1px dashed var(--rule-soft)}
+.aisle .shop-item:last-child{border-bottom:none}
+.aisle .shop-item:hover{background:rgba(217,164,65,.045)}
+
+/* an amount in a unit that could not honestly be added to the row's own */
+.mixed{background:rgba(217,164,65,.1);border:1px solid var(--swap-line);border-radius:var(--radius);
+  padding:2px 8px;font-family:var(--mono);font-size:10.5px;color:var(--ochre);margin-left:9px;
+  cursor:pointer;vertical-align:middle}
+.mixed:hover{background:rgba(217,164,65,.2)}
+
+.shop-item .sfrom .cnt{color:var(--olive)}
+.subpill{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  background:var(--sage-soft);border:1px solid rgba(126,138,87,.35);color:var(--olive);
+  border-radius:20px;padding:4px 11px;cursor:pointer;white-space:nowrap;flex-shrink:0}
+.subpill:hover{border-color:var(--olive)}
+
+/* one "Find" button per row instead of three shop links per row */
+.findwrap{position:relative;flex-shrink:0}
+.findbtn{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  background:none;border:1px solid var(--rule);color:var(--dim);border-radius:var(--radius);
+  padding:5px 11px;cursor:pointer;white-space:nowrap}
+.findbtn:hover,.findbtn.on{border-color:var(--ochre);color:var(--ochre)}
+/* The menu opens sideways into the empty middle of its own row, not downwards.
+   Dropping it below covered the next two rows' buttons, so the click that was
+   meant for the row underneath landed on this row's shop link instead. */
+.findmenu{position:absolute;right:calc(100% + 8px);top:50%;transform:translateY(-50%);
+  z-index:20;display:flex;white-space:nowrap;
+  background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);
+  box-shadow:0 6px 20px rgba(0,0,0,.45);overflow:hidden}
+.findmenu a{padding:7px 14px;font-size:13px;color:var(--dim);text-decoration:none;
+  border-right:1px solid var(--rule)}
+.findmenu a:last-child{border-right:none}
+.findmenu a:hover{background:var(--raise);color:var(--ochre)}
+
+/* things already in the basket sink to the bottom and fold away */
+.got{margin-top:26px;border:1px solid var(--rule);border-radius:var(--radius);
+  background:rgba(24,18,9,.4);overflow:hidden}
+.got-head{display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;
+  color:var(--dim);font-family:var(--mono);font-size:12px}
+.got-head h2{font-family:var(--display);font-size:12.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--olive);margin:0}
+.got-head .n{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
+  color:var(--faint)}
+.got-head:hover .n{color:var(--dim)}
+.got-body{padding:0 14px 12px}
+.got-body .shop-item{background:none;border:none;border-bottom:1px dashed var(--rule-soft);
+  border-radius:0;padding:9px 2px;margin:0}
+.got-body .shop-item:last-child{border-bottom:none}
+
+/* everything on the right-hand end of a row, grouped so it can move as one
+   when the row has to stack on a phone */
+.rowacts{display:flex;align-items:center;gap:9px;margin-left:auto;flex-shrink:0}
+
+/* On a phone there is no room for name, amount and buttons on one line — the
+   name gets squeezed to a ribbon four characters wide. So the row becomes two
+   lines: what it is, then how much and what to do about it. */
+@media(max-width:680px){
+  .shop-row{display:grid;grid-template-columns:auto minmax(0,1fr);
+    grid-template-areas:"chk name" "qty acts";column-gap:11px;row-gap:9px}
+  .shop-row > input[type=checkbox]{grid-area:chk;align-self:start;margin-top:4px}
+  .shop-row > div:not(.qbox):not(.rowacts){grid-area:name;min-width:0}
+  .shop-row > .qbox{grid-area:qty}
+  .shop-row > .rowacts{grid-area:acts;justify-content:flex-end}
+  .aisle .shop-item{padding:12px 4px}
+  /* opening sideways needs somewhere to open into, and here there isn't any */
+  .findmenu{right:0;top:calc(100% + 6px);transform:none}
+}
 
 /* ---------- home ---------- */
 .home-hero{border:1px solid var(--rule);border-radius:var(--radius);padding:40px 32px 34px;
@@ -1116,4 +1207,16 @@ button.applies[onclick]:hover{color:var(--ochre)}
   .swapword{background:none !important;color:#111 !important;border-bottom:1px solid #888 !important}
   .ingword{color:inherit !important;border:none !important}
   .histbar{display:none !important}
+  /* a printed shopping list is the aisles you still have to walk: the header
+     controls, the Got it drawer and the per-row buttons are all no-print */
+  .aisle-head{border-color:#999 !important}
+  .aisle-head h2{color:#111 !important}
+  .aisle-head .n{color:#555 !important}
+  .shop-head .progress{color:#555 !important}
+  .shop-head .progress b{color:#111 !important}
+  .pbar{border:1px solid #999}
+  .pbar span{background:#555 !important}
+  .shop-item{margin-bottom:2px !important;padding:6px 8px !important;
+    break-inside:avoid;page-break-inside:avoid}
+  .shop-item .sfrom{color:#666 !important}
 }

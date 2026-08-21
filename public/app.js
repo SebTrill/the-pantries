@@ -169,6 +169,9 @@ let state = {
   recipeSubSearch:'',    // filter inside a recipe's substitutions tab
   notesDraft:null,       // {id,text} while notes are being edited in place
   showRateForm:false,
+  shopView:'aisle',      // shopping list grouping: aisle | recipe | added
+  shopGotOpen:false,     // the "Got it" drawer — memory-only, like the home sections
+  shopFindOpen:null,     // which row has its "Find" menu showing
 };
 let focusId=null, focusPos=null;
 
@@ -3317,6 +3320,16 @@ function refreshDirtyFlag(){
   } else if(!on && pill){ pill.remove(); }
 }
 document.addEventListener('input', ()=>{ if(inEditForm()) refreshDirtyFlag(); });
+
+/* An open "Find" menu should close when you look elsewhere, including at
+   another row's Find button — which is why this runs before the button's own
+   handler decides what to open. */
+document.addEventListener('click', e=>{
+  if(state.shopFindOpen===null) return;
+  if(e.target.closest('.findwrap')) return;
+  state.shopFindOpen=null;
+  if(state.view==='shopping') renderMain();
+}, true);
 function refreshTotalNote(){
   const el=document.getElementById('totalNote');
   if(!el || !state.editing) return;
@@ -3655,6 +3668,106 @@ async function removeGlobalSub(id){
 }
 
 /* ============ SHOPPING LIST ============ */
+
+/* Aisles, in the order you actually walk a shop: produce by the door, freezer
+ * and drinks on the way out. The order of this array IS the order of the page.
+ *
+ * Matching is by word, not substring, so "chicken stock" lands in Pantry on
+ * "stock" rather than in Meat on "chicken" — the more specific word wins
+ * because earlier keys in an aisle's list beat later ones, and aisles are
+ * tested in the order given here with Pantry's specific words ahead of Meat's
+ * broad ones where it matters. Anything unrecognised goes to Other, visibly,
+ * rather than being guessed into the wrong section.
+ */
+const AISLES = [
+  { key:'produce', label:'Produce', emoji:'🥬', words:[
+    'lemon','lime','orange','apple','banana','berry','strawberry','blueberry','raspberry',
+    'grape','pear','peach','plum','mango','avocado','tomato','potato','onion','shallot',
+    'garlic','ginger','carrot','celery','pepper','bell','chili','jalapeno','cucumber',
+    'lettuce','romaine','spinach','kale','arugula','cabbage','broccoli','cauliflower',
+    'zucchini','squash','eggplant','mushroom','corn','pea','green bean','asparagus',
+    'leek','scallion','herb','parsley','cilantro','basil','thyme','rosemary','sage',
+    'mint','dill','chive','lemongrass','beet','radish','turnip','fennel','sprout'] },
+  { key:'meat', label:'Meat & fish', emoji:'🥩', words:[
+    'chicken','beef','pork','lamb','veal','turkey','duck','bacon','sausage','chorizo',
+    'pancetta','prosciutto','ham','steak','chuck','brisket','rib','thigh','breast',
+    'ground','mince','fish','salmon','tuna','cod','halibut','tilapia','trout','shrimp',
+    'prawn','scallop','crab','lobster','clam','mussel','oyster','anchovy','sardine'] },
+  { key:'dairy', label:'Dairy & eggs', emoji:'🥛', words:[
+    'milk','buttermilk','cream','half and half','butter','margarine','egg','cheese',
+    'parmesan','cheddar','mozzarella','feta','ricotta','gouda','brie','gruyere',
+    'yogurt','yoghurt','sour cream','creme fraiche','mascarpone','cream cheese'] },
+  { key:'bakery', label:'Bakery', emoji:'🍞', words:[
+    'bread','baguette','roll','bun','brioche','sourdough','pita','tortilla','naan',
+    'croissant','bagel','muffin','crouton','breadcrumb','panko','cake','pastry'] },
+  { key:'spice', label:'Spices & baking', emoji:'🧂', words:[
+    'salt','peppercorn','cumin','coriander','paprika','turmeric','cinnamon','nutmeg',
+    'clove','cardamom','allspice','oregano','bay leaf','chili flake','cayenne',
+    'curry','saffron','vanilla','yeast','baking powder','baking soda','cornstarch',
+    'cocoa','chocolate','sugar','brown sugar','powdered sugar','honey','molasses',
+    'maple syrup','extract','food coloring','sprinkle'] },
+  { key:'pantry', label:'Pantry', emoji:'🫙', words:[
+    'flour','rice','pasta','spaghetti','penne','noodle','couscous','quinoa','barley',
+    'oat','lentil','chickpea','bean','stock','broth','oil','olive oil','vinegar',
+    'soy sauce','fish sauce','worcestershire','mustard','ketchup','mayonnaise',
+    'hot sauce','sriracha','tahini','passata','tomato paste','canned','can','jar',
+    'coconut milk','peanut butter','jam','nut','almond','walnut','pecan','cashew',
+    'pistachio','peanut','seed','sesame','raisin','date','cracker','chip','tortilla chip'] },
+  { key:'frozen', label:'Frozen', emoji:'🧊', words:[
+    'frozen','ice cream','ice','puff pastry','phyllo','filo','pea frozen'] },
+  { key:'drinks', label:'Drinks', emoji:'🍷', words:[
+    'wine','beer','vermouth','sherry','port','brandy','rum','whiskey','bourbon',
+    'vodka','gin','tequila','juice','soda','tonic','coffee','tea','water','cider'] },
+  { key:'other', label:'Other', emoji:'🧺', words:[] },
+];
+/* Multi-word keys are checked first so "green bean" beats "bean", and "sour
+   cream" beats "cream". Within one length, the first aisle listed wins. */
+const AISLE_INDEX = (()=>{
+  const rows=[];
+  AISLES.forEach((a,ai)=>a.words.forEach(w=>rows.push({w, ai, n:w.split(' ').length})));
+  rows.sort((x,y)=> y.n-x.n || y.w.length-x.w.length || x.ai-y.ai);
+  return rows;
+})();
+/* "Chicken stock" is a stock, not a chicken. In English the last word of an
+   ingredient name is the thing you are buying and everything before it
+   describes it, so the end of the name is asked first and the whole name only
+   after that. Without this, "chicken" beats "stock" for being the longer word
+   and the row lands in the meat aisle. */
+function aisleFor(name){
+  const clean=String(name||'').toLowerCase().split(',')[0]
+    .replace(/[^a-z0-9\s-]/g,' ').replace(/\s+/g,' ').trim();
+  const padded=' '+clean+' ';
+  // "frozen" beats the noun it modifies: frozen peas are in the freezer, not
+  // with the fresh produce
+  if(/(^|\s)frozen(\s|$)/.test(clean)) return AISLES.find(a=>a.key==='frozen');
+  const ends = w => new RegExp('(^|[\\s-])'+reEsc(w)+'s?$').test(clean);
+  // word-boundary match, so "stock" does not fire on "stockpot"
+  const has  = w => new RegExp('(^|[\\s-])'+reEsc(w)+'s?([\\s-]|$)').test(padded);
+  for(const r of AISLE_INDEX) if(ends(r.w)) return AISLES[r.ai];
+  for(const r of AISLE_INDEX) if(has(r.w))  return AISLES[r.ai];
+  return AISLES[AISLES.length-1];
+}
+function setShopView(v){ state.shopView=v; state.shopFindOpen=null; renderMain(); }
+function toggleShopGot(){ state.shopGotOpen=!state.shopGotOpen; renderMain(); }
+function toggleShopFind(id){
+  state.shopFindOpen = state.shopFindOpen===id ? null : id;
+  renderMain();
+}
+/** Dismiss a mixed-unit note once you have decided what the row really needs. */
+async function clearShopAlt(id){
+  try{ await apiJSON('/api/shopping/'+id,'PATCH',{alt:[]}); render();
+    toast('Noted — the row keeps just its own amount now.'); }
+  catch(e){ apiError(e); }
+}
+function shopSources(it){
+  const list=(it.sources&&it.sources.length) ? it.sources
+    : (it.fromRecipe && it.fromRecipe!=='manual' ? [it.fromRecipe] : []);
+  return list;
+}
+function shopAltText(it){
+  return (it.alt||[]).map(a=>`${fmtQty(a.qty)}${a.unit?' '+a.unit:''}`).join(' · ');
+}
+
 async function addRecipeToShoppingList(recipeId){
   const r=recipes.find(x=>x.id===recipeId);
   const mult=state.scale[r.id]||1;
@@ -3737,11 +3850,123 @@ async function addManualShopItem(){
     render(); toast(`Added ${fmtQty(qty)}${unit?' '+unit:''} ${v}.`);
   }catch(e){ apiError(e); }
 }
+/* One row. The same markup whichever way the list is grouped, so switching
+   between By aisle / By recipe / As added never changes what a row can do. */
+function shopRow(it, opts){
+  const o=opts||{};
+  const subs=subsForName(it.origName||it.name);
+  const open=state.expandedShopSubs[it.id];
+  const srcs=shopSources(it);
+  const alt=shopAltText(it);
+  const findOpen=state.shopFindOpen===it.id;
+  // Grouped by recipe, a shared row shows up under every recipe that wants it,
+  // carrying the whole amount. Saying which others share it is the difference
+  // between "buy six lemons" and "buy six lemons for this salad".
+  const others = o.underRecipe ? srcs.filter(s=>s!==o.underRecipe) : [];
+  const from = o.underRecipe
+    ? (others.length
+        ? `<span class="cnt">shared</span> · also for ${others.map(esc).join(' · ')}`
+        : '')
+    : srcs.length===0 ? 'added manually'
+    : srcs.length===1 ? 'from '+esc(srcs[0])
+    : `<span class="cnt">${srcs.length} recipes</span> · ${srcs.map(esc).join(' · ')}`;
+  return `<div class="shop-item ${it.checked?'checked':''}" data-shop-id="${it.id}">
+    <div class="shop-row">
+      <input type="checkbox" ${it.checked?'checked':''} onchange="toggleShopItem('${it.id}')"
+        aria-label="Got ${escA(it.name)}">
+      <div class="qbox no-print">
+        <button class="qstep" title="One fewer" onclick="bumpShopQty('${it.id}',-1)">−</button>
+        <input class="qin" type="text" value="${escA(fmtQty(it.qty))}" aria-label="How many"
+          onchange="setShopQty('${it.id}',this.value)"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+        <input class="uin" type="text" value="${escA(it.unit||'')}" aria-label="Unit"
+          title="Unit — cups, lb, cloves, or nothing at all"
+          onchange="setShopUnit('${it.id}',this.value)"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+        <button class="qstep" title="One more" onclick="bumpShopQty('${it.id}',1)">+</button>
+      </div>
+      <div style="min-width:0;flex:1;">
+        <div class="sname"><span class="print-only">${fmtQty(it.qty)} ${esc(it.unit)} </span>${esc(it.name)}${
+          alt?`<button class="mixed no-print" title="A different unit that cannot be added to this one. Click when you have decided."
+                 onclick="clearShopAlt('${it.id}')">also ${esc(alt)}</button>
+               <span class="print-only"> (also ${esc(alt)})</span>`:''}</div>
+        <div class="sfrom">${from}${it.origName?`${from?' · ':''}swapped from ${esc(it.origName)}`:''}</div>
+      </div>
+      <div class="rowacts">
+        ${subs.length?`<button class="subpill no-print" onclick="toggleShopSubs('${it.id}')"
+          title="Substitutions from your library">${open?'▾':''}${subs.length} swap${subs.length!==1?'s':''}</button>`:''}
+        ${it.checked?'':`<div class="findwrap no-print">
+          <button class="findbtn ${findOpen?'on':''}" onclick="toggleShopFind('${it.id}')">Find ⌄</button>
+          ${findOpen?`<div class="findmenu">
+            <a target="_blank" rel="noopener" href="${storeLink('amazon',it.name)}">Amazon</a>
+            <a target="_blank" rel="noopener" href="${storeLink('target',it.name)}">Target</a>
+            <a target="_blank" rel="noopener" href="${storeLink('walmart',it.name)}">Walmart</a>
+          </div>`:''}
+        </div>`}
+        <button class="rm-btn no-print" onclick="removeShopItem('${it.id}')"
+          title="Remove from the list">×</button>
+      </div>
+    </div>
+    ${subs.length&&open?`<div class="shop-subs no-print">${subs.map(s=>`
+      <div class="srow"><div>→ <b>${esc(s.substitute)}</b>${s.notes
+        ?`<div class="note" style="font-size:11.5px;color:var(--dim);">${esc(s.notes)}</div>`:''}</div>
+      <button class="icon-btn sm" onclick="swapShopItem('${it.id}','${s.id}')">Buy this instead</button>
+      </div>`).join('')}</div>`:''}
+  </div>`;
+}
+
+const SHOP_VIEWS = [
+  { key:'aisle',  label:'By aisle' },
+  { key:'recipe', label:'By recipe' },
+  { key:'added',  label:'As added' },
+];
+
+/** How the still-to-buy items are split into headed groups. Returns
+ *  [[headingHtml, items], ...] with the headings already in walking order. */
+function shopGroups(open){
+  if(state.shopView==='added') return [[null, open]];
+  if(state.shopView==='recipe'){
+    const byRecipe=new Map();
+    for(const it of open){
+      const srcs=shopSources(it);
+      // an item wanted by three recipes appears under all three, because when
+      // you are shopping for one dinner you want that dinner's whole list
+      for(const s of (srcs.length?srcs:['Added by hand'])){
+        if(!byRecipe.has(s)) byRecipe.set(s,[]);
+        byRecipe.get(s).push(it);
+      }
+    }
+    return [...byRecipe.entries()]
+      .sort((a,b)=> a[0]==='Added by hand' ? 1 : b[0]==='Added by hand' ? -1
+        : a[0].localeCompare(b[0]))
+      .map(([title,items])=>[`<h2>${esc(title)}</h2>`, items, title]);
+  }
+  const buckets=new Map();
+  for(const it of open){
+    const a=aisleFor(it.name);
+    if(!buckets.has(a.key)) buckets.set(a.key,[]);
+    buckets.get(a.key).push(it);
+  }
+  return AISLES.filter(a=>buckets.has(a.key))
+    .map(a=>[`<h2>${a.emoji} ${esc(a.label)}</h2>`, buckets.get(a.key)]);
+}
+
 function viewShopping(){
+  const open=shoppingList.filter(i=>!i.checked);
+  const got=shoppingList.filter(i=>i.checked);
+  const total=shoppingList.length;
+  const pct= total ? Math.round(got.length/total*100) : 0;
+  const groups=shopGroups(open);
   return `
-    <h1 class="title">Shopping List</h1>
-    <p class="subtle">Ingredients pulled from recipes, plus anything you add by hand. Set how many of
-      each you want with the − and + steppers, and each item shows substitutions from your library.</p>
+    <div class="shop-head">
+      <h1 class="title">Shopping List</h1>
+      ${total?`<span class="progress"><b>${got.length}</b> of ${total} got
+        <span class="pbar"><span style="width:${pct}%"></span></span></span>`:''}
+      ${open.length>1?`<div class="right no-print"><div class="segmented">
+        ${SHOP_VIEWS.map(v=>`<button class="${state.shopView===v.key?'on':''}"
+          onclick="setShopView('${v.key}')">${v.label}</button>`).join('')}
+      </div></div>`:''}
+    </div>
     <div class="controls no-print">
       <div class="search-wrap" style="flex:2;"><input id="manualItem" type="text"
         placeholder="Add an item manually, e.g. olive oil" style="padding-left:14px;"
@@ -3752,42 +3977,25 @@ function viewShopping(){
         aria-label="Unit" onkeydown="if(event.key==='Enter'){event.preventDefault();addManualShopItem();}">
       <button class="icon-btn primary" onclick="addManualShopItem()">+ Add</button>
       <button class="icon-btn" onclick="window.print()">🖨️ Print list</button>
-      <button class="icon-btn" onclick="clearChecked()">Clear checked</button>
+      ${got.length?`<button class="icon-btn" onclick="clearChecked()">Clear checked</button>`:''}
     </div>
-    ${shoppingList.length===0?`<div class="empty">Your list is empty. Open a recipe and click "Add to list."</div>`:
-    shoppingList.map(it=>{
-      const subs=subsForName(it.origName||it.name);
-      const open=state.expandedShopSubs[it.id];
-      return `<div class="shop-item ${it.checked?'checked':''}">
-        <div class="shop-row">
-          <input type="checkbox" ${it.checked?'checked':''} onchange="toggleShopItem('${it.id}')">
-          <div class="qbox no-print">
-            <button class="qstep" title="One fewer" onclick="bumpShopQty('${it.id}',-1)">−</button>
-            <input class="qin" type="text" value="${escA(fmtQty(it.qty))}" aria-label="How many"
-              onchange="setShopQty('${it.id}',this.value)"
-              onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
-            <input class="uin" type="text" value="${escA(it.unit||'')}" placeholder="unit" aria-label="Unit"
-              onchange="setShopUnit('${it.id}',this.value)"
-              onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
-            <button class="qstep" title="One more" onclick="bumpShopQty('${it.id}',1)">+</button>
-          </div>
-          <div style="min-width:0;">
-            <div class="sname"><span class="print-only">${fmtQty(it.qty)} ${esc(it.unit)} </span>${esc(it.name)}</div>
-            <div class="sfrom">${it.fromRecipe==='manual'?'added manually':'from '+esc(it.fromRecipe)}${it.origName?` · swapped from ${esc(it.origName)}`:''}</div>
-          </div>
-          <div class="store-links no-print">
-            <a class="store-link" target="_blank" href="${storeLink('amazon',it.name)}">Amazon</a>
-            <a class="store-link" target="_blank" href="${storeLink('target',it.name)}">Target</a>
-            <a class="store-link" target="_blank" href="${storeLink('walmart',it.name)}">Walmart</a>
-          </div>
-          <button class="rm-btn no-print" onclick="removeShopItem('${it.id}')">×</button>
-        </div>
-        ${subs.length?`<button class="sub-toggle no-print" onclick="toggleShopSubs('${it.id}')">${open?'▾':'▸'} ${subs.length} substitution${subs.length!==1?'s':''} available</button>`:''}
-        ${subs.length&&open?`<div class="shop-subs">${subs.map(s=>`
-          <div class="srow"><div>→ <b>${esc(s.substitute)}</b>${s.notes?`<div class="note" style="font-size:11.5px;color:var(--dim);">${esc(s.notes)}</div>`:''}</div>
-          <button class="icon-btn sm no-print" onclick="swapShopItem('${it.id}','${s.id}')">Buy this instead</button></div>`).join('')}</div>`:''}
-      </div>`;
-    }).join('')}`;
+    ${total===0
+      ? `<div class="empty">Your list is empty. Open a recipe and click "Add to list."</div>`
+      : open.length===0
+        ? `<div class="empty">Everything on the list is in the basket. ${got.length} item${
+            got.length===1?'':'s'} below.</div>`
+        : groups.map(([head,items,title])=>`<div class="aisle">
+            ${head?`<div class="aisle-head">${head}<span class="n">${items.length} item${
+              items.length===1?'':'s'}</span></div>`:''}
+            ${items.map(it=>shopRow(it,{underRecipe:title})).join('')}
+          </div>`).join('')}
+    ${got.length?`<div class="got no-print ${state.shopGotOpen?'open':''}">
+      <div class="got-head" onclick="toggleShopGot()">${state.shopGotOpen?'▾':'▸'}
+        <h2>Got it</h2>
+        <span class="n">${got.length} item${got.length===1?'':'s'} · tap to ${
+          state.shopGotOpen?'fold away':'see them'}</span></div>
+      ${state.shopGotOpen?`<div class="got-body">${got.map(it=>shopRow(it,{})).join('')}</div>`:''}
+    </div>`:''}`;
 }
 
 /* ============ BOOT ============ */
