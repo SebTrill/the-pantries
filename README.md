@@ -173,11 +173,10 @@ labels and big numbers, never body text or dense UI.
 **Change photo size on upload** — the `max` argument in `downscale()` in `public/app.js`,
 currently 1400px. Photos are re-encoded as JPEG before upload to keep the site quick.
 
-**Migrations** live in the repo root as `migrate-00N-*.sql` and are meant to be pasted into
-the D1 Console and executed. They are all additive and safe to re-run. Run them in order;
-`migrate-005-local-days.sql` repairs cook days that were recorded in UTC, and
-`migrate-006-times.sql` adds prep and cook minutes (both default to 0, which the app reads as
-"not recorded" and shows as an em dash), and `migrate-007-emoji.sql` adds the emoji palette.
+**Migrations** live in `migrations/`, numbered `00N-name.sql`, and are meant to be pasted into
+the D1 Console and executed in order. They are all additive and safe to re-run — see
+`migrations/README.md` for what each one does and which release it belongs to. `schema.sql`
+already contains everything they add, so a database created from scratch needs none of them.
 
 **The emoji palette holds emoji, not counts.** `emoji_palette` stores only what you added; how often
 each one is used is read live from the `recipes` and `cookbooks` tables in `loadEmojiPalette()`. That
@@ -384,7 +383,7 @@ appears under every recipe that wants it carrying the whole amount — so it say
 The `Find` menu opens **sideways** into its own row, not downwards. Dropping it below covered the next
 two rows' buttons, so a click meant for the row underneath landed on this row's shop link instead.
 
-Migration `migrate-008-shopping.sql` adds `sources` and `alt` and backfills from `from_recipe`.
+Migration `migrations/008-shopping.sql` adds `sources` and `alt` and backfills from `from_recipe`.
 
 ---
 

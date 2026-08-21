@@ -448,7 +448,7 @@ async function saveRecipe(db, body, existingId) {
 
     // body.timesCooked is deliberately ignored. How many times you cooked
     // something is the number of cooks on record, not a field — see
-    // migrate-009. The edit form adds and removes dates instead.
+    // migrations/009-cook-dates.sql. The edit form adds and removes dates instead.
   } else {
     await db.prepare(
       `INSERT INTO recipes (id,title,emoji,base_servings,times_cooked,date_added,
