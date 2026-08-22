@@ -35,6 +35,9 @@
   --body:'Petrona',Georgia,'Times New Roman',serif;
   --mono:'PlexMono',ui-monospace,SFMono-Regular,Menlo,monospace;
   --radius:3px;
+  /* search fields, and the button beside them, are rounder than everything
+     else on purpose — they are the one control you go looking for */
+  --radius-search:10px;
   --shadow:0 2px 14px rgba(0,0,0,.4);
 
   /* ---- colours that used to be written straight into rules ----
@@ -264,7 +267,7 @@ h1.title{font-family:var(--display);font-size:30px;line-height:1.1;margin:0 0 6p
 /* ---------- controls ---------- */
 .controls{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:22px;align-items:center}
 .search-wrap{position:relative;flex:1;min-width:220px}
-.search-wrap input{width:100%;padding:11px 14px 11px 34px;border-radius:var(--radius);
+.search-wrap input{width:100%;padding:11px 14px 11px 36px;border-radius:var(--radius-search);
   border:1px solid var(--rule);background:var(--panel);font-family:var(--body);font-size:15px;color:var(--cream)}
 .search-wrap input::placeholder{color:var(--faint)}
 .search-wrap input:focus{outline:none;border-color:var(--ochre);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
@@ -297,13 +300,17 @@ select:focus{outline:none;border-color:var(--ochre)}
 /* ---------- recipe / cookbook cards ---------- */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px}
 .rcard{background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);
-  cursor:pointer;overflow:hidden;position:relative;transition:transform .14s,border-color .14s}
+  cursor:pointer;overflow:hidden;position:relative;transition:transform .14s,border-color .14s;
+  /* a column, so the meta row can be pushed to the bottom rather than floating
+     wherever the title happens to stop — that gap measured 14px on one card and
+     52px on its neighbour */
+  display:flex;flex-direction:column}
 .rcard:hover{transform:translateY(-2px);border-color:var(--ochre-dim)}
 .rcard .thumb{height:118px;display:flex;align-items:center;justify-content:center;font-size:34px;
   overflow:hidden;position:relative;border-bottom:1px solid var(--rule);
   background:repeating-linear-gradient(-45deg,var(--hatch-b) 0 9px,var(--hatch-c) 9px 18px)}
 .rcard .thumb img{width:100%;height:100%;object-fit:cover;display:block}
-.rcard .body{padding:13px 15px}
+.rcard .body{padding:13px 15px;display:flex;flex-direction:column;flex:1}
 .rcard h3{font-family:var(--display);margin:0 0 4px;font-size:15.5px;line-height:1.2;
   color:var(--paper);letter-spacing:-.01em}
 .card-del{position:absolute;top:8px;right:8px;width:26px;height:26px;border-radius:50%;border:none;
@@ -318,8 +325,11 @@ select:focus{outline:none;border-color:var(--ochre)}
 .badge{display:inline-block;font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;
   text-transform:uppercase;color:var(--olive);background:var(--sage-soft);border:1px solid rgba(var(--olive-rgb),.3);
   padding:3px 8px;border-radius:20px;margin:0 4px 6px 0}
+/* margin-top:auto pushes this to the bottom of the flex column that .body now
+   is, so every card in a row lands its meta on the same line. The 9px stays as
+   the minimum gap for the case where the card is already full. */
 .rmeta{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);
-  font-size:10.5px;color:var(--dim);margin-top:9px}
+  font-size:10.5px;color:var(--dim);margin-top:auto;padding-top:9px}
 .stars{color:var(--ochre);letter-spacing:1px}
 .card-source{font-family:var(--mono);font-size:10px;color:var(--faint);margin:-1px 0 3px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -544,7 +554,8 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
 /* header: title, how far along you are, and how the list is grouped */
 .shop-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:16px}
 .shop-head h1{margin:0}
-.shop-head .right{margin-left:auto}
+.shop-head .right{margin-left:auto;display:flex;align-items:center;gap:9px;
+  flex-wrap:wrap;justify-content:flex-end}
 .progress{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
   color:var(--dim);display:flex;align-items:center;gap:10px}
 .progress b{color:var(--ochre);font-weight:400}
@@ -670,10 +681,13 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
 .home-hero p{margin:12px 0 0;font-family:var(--mono);font-size:11px;letter-spacing:.22em;
   text-transform:uppercase;color:var(--dim)}
 .home-search{display:flex;gap:9px;max-width:600px;margin:22px auto 0}
-.home-search input{flex:1;padding:13px 16px;border-radius:var(--radius);border:1px solid var(--rule);
+.home-search input{flex:1;padding:13px 18px;border-radius:var(--radius-search);border:1px solid var(--rule);
   font-size:16px;background:var(--panel);color:var(--cream);font-family:var(--body)}
 .home-search input:focus{outline:none;border-color:var(--ochre);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
-.home-search button{padding:13px 24px;font-size:12.5px}
+.home-search button{padding:13px 24px;font-size:12.5px;border-radius:var(--radius-search)}
+/* the button that runs a search matches the field it belongs to */
+.search-wrap + .icon-btn,.controls .search-wrap ~ .icon-btn.sm{border-radius:var(--radius-search)}
+.dupsearch,.catpop .catfind input{border-radius:var(--radius-search)}
 .home-grid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:28px;align-items:start}
 .home-sec{margin-bottom:32px}
 .home-sec .grid{grid-template-columns:repeat(auto-fill,minmax(192px,1fr))}
@@ -1178,12 +1192,55 @@ dl.facts dd{margin:0;text-align:left;color:var(--paper)}
 .cookadd input[type=date]:focus{outline:none;border-color:var(--ochre);
   box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
 
+/* Destructive, but not the point of the page: outlined until hover, when it
+   commits to the colour it has been threatening. */
+.icon-btn.danger-soft{background:none;border:1px solid rgba(var(--danger-rgb),.5);
+  color:var(--danger)}
+.icon-btn.danger-soft:hover{background:var(--danger);border-color:var(--danger);
+  color:var(--on-danger)}
+
+/* ---------- the category filter ---------- */
+.catwrap{position:relative}
+.catbtn{display:flex;align-items:center;gap:9px;background:var(--panel);border:1px solid var(--rule);
+  color:var(--cream);border-radius:var(--radius-search);padding:11px 15px;font-family:var(--body);
+  font-size:14.5px;cursor:pointer;min-width:190px;transition:border-color .14s}
+.catbtn:hover{border-color:var(--ochre)}
+/* a filter that is doing something says so */
+.catbtn.on{border-color:var(--ochre);color:var(--ochre)}
+.catbtn .ct{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.catbtn .caret{margin-left:auto;color:var(--faint);font-size:11px}
+.catpop{position:absolute;left:0;top:calc(100% + 7px);z-index:40;width:300px;max-width:88vw;
+  background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius-search);
+  overflow:hidden;box-shadow:0 12px 30px rgba(var(--shade-rgb),.5)}
+.catfind{padding:11px;border-bottom:1px solid var(--rule)}
+.catfind input{width:100%;padding:9px 12px;border-radius:var(--radius-search);
+  border:1px solid var(--rule);background:var(--ground);color:var(--cream);
+  font-family:var(--body);font-size:14px}
+.catfind input:focus{outline:none;border-color:var(--ochre);
+  box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
+.catlist{max-height:330px;overflow-y:auto}
+.catopt{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;
+  color:var(--dim);padding:9px 15px;font-family:var(--body);font-size:14px;text-align:left;
+  cursor:pointer}
+.catopt:hover{background:var(--raise);color:var(--cream)}
+.catopt.on{color:var(--ochre);background:rgba(var(--accent-rgb),.09)}
+.catopt .n{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+.catnone{padding:14px 15px;font-size:13.5px;color:var(--dim)}
+.catmore{width:100%;padding:9px 15px;font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);border:none;border-top:1px dashed var(--rule-soft);
+  background:none;text-align:left;cursor:pointer}
+.catmore:hover{color:var(--ochre)}
+
 /* ---------- macros ----------
  * Two numeric columns: what you eat, and what the pan holds. The left one
  * never moves when you scale the recipe — doubling it makes twice as much
  * food, not richer food — so only the right column is marked as scaled. */
 .macros{border:1px solid var(--rule);border-radius:var(--radius);background:var(--panel);
   overflow:hidden;margin-top:14px}
+/* sitting under the tab strip, the panel joins onto it rather than floating
+   below it with its own heading repeating what the tab already says */
+.macros.in-tab{margin-top:0;border-top:none;border-radius:0 0 var(--radius) var(--radius)}
+.macros.in-tab .macros-head{justify-content:flex-end;padding:10px 16px;border-bottom:none}
 .macros-head{display:flex;align-items:center;gap:9px;padding:12px 16px 11px;
   border-bottom:1px solid var(--rule)}
 .macros-head h3{font-family:var(--display);font-size:12.5px;letter-spacing:.16em;

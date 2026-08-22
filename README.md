@@ -385,6 +385,16 @@ two rows' buttons, so a click meant for the row underneath landed on this row's 
 
 Migration `migrations/008-shopping.sql` adds `sources` and `alt` and backfills from `from_recipe`.
 
+**Search fields are rounder than everything else.** `--radius-search:10px` against the site's
+`--radius:3px`. Only the field you type a search into and the button beside it use it — cards, panels
+and ordinary buttons keep the square-ish 3px the design is built on.
+
+**The category filter is a panel, not a `<select>`.** A dropdown is fine at six categories and
+useless at forty. `renderCategoryPicker()` draws the ten most alphabetically-first categories in use
+with their recipe counts, a box to filter them, and a way past the ten. Counts come from
+`categoryCounts()` reading the recipes, so a category nothing uses any more cannot linger in the
+filter.
+
 **The home page earns its sections.** `HOME_EARNED` in `public/app.js` holds one predicate per
 section, each named for the claim it guards. A section does not render until the collection can
 support what it asserts: no ranking without three recipes actually cooked, no distribution while one
