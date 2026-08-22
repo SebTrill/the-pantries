@@ -26,6 +26,7 @@
  *   PATCH  /api/shopping/:id         toggle/edit item
  *   DELETE /api/shopping/:id         remove item
  *   POST   /api/shopping/clear-checked
+ *   POST   /api/shopping/clear-all       empty the whole list
  *   GET    /files/:key               download a scanned cookbook file from R2
  *   POST   /api/cookbooks            create
  *   PUT    /api/cookbooks/:id        update
@@ -347,7 +348,11 @@ async function loadCookbooks(db) {
     byId.set(b.id, {
       id: b.id, title: b.title, author: b.author, publisher: b.publisher,
       published: b.published, edition: b.edition, isbn: b.isbn,
-      notes: b.notes, emoji: b.emoji, images: [], files: [],
+      notes: b.notes, emoji: b.emoji,
+      // when the book joined the shelf, as opposed to `published`, which is
+      // when it was printed — the two sort very differently
+      createdAt: b.created_at,
+      images: [], files: [],
     });
   }
   for (const f of files.results) {
@@ -1312,6 +1317,14 @@ export default {
 
       if (path === '/api/shopping/clear-checked' && method === 'POST') {
         await db.prepare('DELETE FROM shopping_items WHERE checked=1').run();
+        return json(await bootstrap(db));
+      }
+
+      /* Emptying the list. Deliberately its own endpoint rather than the client
+         firing one DELETE per row: nineteen requests can half-succeed and leave
+         a list nobody asked for. */
+      if (path === '/api/shopping/clear-all' && method === 'POST') {
+        await db.prepare('DELETE FROM shopping_items').run();
         return json(await bootstrap(db));
       }
 

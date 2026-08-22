@@ -252,6 +252,8 @@ let state = {
   shopView:'aisle',      // shopping list grouping: aisle | recipe | added
   shopGotOpen:false,     // the "Got it" drawer — memory-only, like the home sections
   shopFindOpen:null,     // which row has its "Find" menu showing
+  ingTab:'ingredients',  // left column of a recipe: ingredients | macros
+  catPickerOpen:false, catQuery:'', catShowAll:false,   // the category filter panel
 };
 let focusId=null, focusPos=null;
 
@@ -578,6 +580,7 @@ function attemptNav(fn){
 }
 function goto(view){ attemptNav(()=>{ state.view=view; state.detailTab='instructions'; state.showRecipeSubForm=false; render(); }); }
 function openRecipe(id){
+  state.ingTab='ingredients';
   // must test dirtiness, not merely "am I in a form" — otherwise the retry
   // lands right back here and recurses forever
   if(inEditForm() && isEditDirty()){
@@ -1237,18 +1240,29 @@ function onBookSearch(el){ focusId='bookSearch'; focusPos=el.selectionStart; sta
  * cloth-binding tones the home-page shelf already uses.
  */
 const BOOK_TONES = ['toneA','toneB','toneC','toneD','toneE'];
+/* "Newest" and "Most recent" are two different questions about a book: when you
+   added it to the shelf, and when it was printed. Both are worth sorting by, so
+   both are here and the labels say which is which. */
 const BOOK_SORTS = [
   { key:'recipes',   label:'Most recipes' },
+  { key:'newest',    label:'Newest first' },
+  { key:'oldest',    label:'Oldest first' },
   { key:'az',        label:'A → Z' },
+  { key:'za',        label:'Z → A' },
   { key:'author',    label:'By author' },
-  { key:'published', label:'Most recent' },
+  { key:'published', label:'Latest published' },
 ];
 function setBookSort(v){ state.bookSort=v; renderMain(); }
 function sortedBooks(list){
   const n=b=>recipesInBook(b.id).length;
   const cmp={
     recipes:(a,b)=>n(b)-n(a) || a.title.localeCompare(b.title),
+    // a book added before createdAt was recorded sorts as oldest rather than
+    // jumping to the top on a 0
+    newest:(a,b)=>(b.createdAt||0)-(a.createdAt||0) || a.title.localeCompare(b.title),
+    oldest:(a,b)=>(a.createdAt||Infinity)-(b.createdAt||Infinity) || a.title.localeCompare(b.title),
     az:(a,b)=>a.title.localeCompare(b.title),
+    za:(a,b)=>b.title.localeCompare(a.title),
     author:(a,b)=>(a.author||'~').localeCompare(b.author||'~') || a.title.localeCompare(b.title),
     published:(a,b)=>String(b.published||'').localeCompare(String(a.published||'')) || a.title.localeCompare(b.title),
   }[state.bookSort||'recipes'];
@@ -1757,6 +1771,80 @@ const QUICK_FILTERS = [
   { key:'nophoto', label:'No photo',     test:r => !(r.images||[]).length },
   { key:'quick',   label:'Under 30 min', test:r => { const t=totalMinutes(r); return t>0 && t<=30; } },
 ];
+/* ---------- the category filter ----------
+ * This was a native <select>. A dropdown is fine at six categories and useless
+ * at forty: you cannot search it, and every category ever used is in there
+ * whether one recipe uses it or thirty. So it is a small panel instead —
+ * alphabetical, ten at a time, each with the number of recipes behind it, and
+ * a box to type into.
+ *
+ * Ten is not a cap on what you can reach, only on what is drawn before you ask.
+ */
+const CAT_PAGE = 10;
+function toggleCatPicker(){
+  state.catPickerOpen = !state.catPickerOpen;
+  state.catQuery = ''; state.catShowAll = false;
+  renderMain();
+  if(state.catPickerOpen){
+    const el = document.getElementById('catFind');
+    if(el) el.focus();
+  }
+}
+function onCatQuery(el){
+  state.catQuery = el.value;
+  const box = document.getElementById('catList');
+  if(box) box.innerHTML = categoryOptionsHtml();
+}
+function pickCategory(v){
+  state.categoryFilter = v;
+  state.catPickerOpen = false;
+  renderMain();
+}
+function showAllCategories(){ state.catShowAll = true;
+  const box = document.getElementById('catList');
+  if(box) box.innerHTML = categoryOptionsHtml();
+}
+/** Every category actually in use, alphabetical, with how many recipes use it.
+ *  Reading the counts off the recipes rather than a stored list means a
+ *  category nothing uses any more cannot linger in the filter. */
+function categoriesInUse(){
+  const c = categoryCounts();
+  return [...c.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
+}
+function categoryOptionsHtml(){
+  const q = (state.catQuery||'').trim().toLowerCase();
+  const all = categoriesInUse().filter(([name]) => !q || name.toLowerCase().includes(q));
+  const shown = state.catShowAll ? all : all.slice(0, CAT_PAGE);
+  const hidden = all.length - shown.length;
+  const cur = state.categoryFilter;
+  return `
+    ${q?'':`<button class="catopt ${cur==='all'?'on':''}" onclick="pickCategory('all')">
+      All categories <span class="n">${recipes.length}</span></button>`}
+    ${shown.length ? shown.map(([name,n])=>`
+      <button class="catopt ${cur===name?'on':''}" onclick="pickCategory('${escA(name)}')">
+        ${esc(name)} <span class="n">${n}</span></button>`).join('')
+      : `<div class="catnone">Nothing matches "${esc(state.catQuery)}".</div>`}
+    ${hidden>0?`<button class="catmore" onclick="showAllCategories()">
+      ▾ Show all ${all.length} categories</button>`:''}`;
+}
+function renderCategoryPicker(){
+  const cur = state.categoryFilter;
+  const label = cur==='all' ? 'All categories' : cur;
+  return `<div class="catwrap">
+    <button class="catbtn ${cur==='all'?'':'on'}" onclick="event.stopPropagation(); toggleCatPicker()"
+      aria-haspopup="true" aria-expanded="${!!state.catPickerOpen}">
+      <span class="ct">${esc(label)}</span><span class="caret">▾</span></button>
+    ${state.catPickerOpen?`<div class="catpop" onclick="event.stopPropagation()">
+      <div class="catfind"><input id="catFind" type="text" placeholder="Find a category…"
+        value="${escA(state.catQuery||'')}" oninput="onCatQuery(this)"></div>
+      <div class="catlist" id="catList">${categoryOptionsHtml()}</div>
+    </div>`:''}
+  </div>`;
+}
+document.addEventListener('click', ()=>{
+  if(state.catPickerOpen){ state.catPickerOpen=false; renderMain(); }
+});
+
 const SORTS = [
   { key:'newest',     label:'Newest first' },
   { key:'oldest',     label:'Oldest first' },
@@ -1841,10 +1929,7 @@ function viewBrowse(){
       <div class="search-wrap"><span class="sicon">🔍</span>
         <input id="searchInput" type="text" placeholder="Search by name, ingredient, category, tag, or cookbook..."
           value="${escA(state.searchQuery)}" oninput="onSearch(this)"></div>
-      <select onchange="state.categoryFilter=this.value; renderMain();">
-        <option value="all">All categories</option>
-        ${allCategories.map(c=>`<option value="${escA(c)}" ${state.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}
-      </select>
+      ${renderCategoryPicker()}
       <select onchange="setBookFilter(this.value)">
         <option value="all">All cookbooks</option>
         <option value="any"  ${state.bookFilter==='any'?'selected':''}>— From any cookbook (${linked}) —</option>
@@ -2378,7 +2463,7 @@ function fmtMacro(n, kcal){
 }
 function anyMacros(r){ return MACROS.some(m => hasMacro(r.macros, m.key)); }
 
-function renderMacros(r, mult){
+function renderMacros(r, mult, inTab){
   if (!anyMacros(r)) return '';                    // nothing entered, nothing shown
   const m = r.macros;
   const servings = Number(r.baseServings) || 0;
@@ -2420,9 +2505,12 @@ function renderMacros(r, mult){
       <span class="a">${fmtMacro(m[x.key])} g</span>${cell(x.key)}</div>`;
   }).join('');
 
-  return `<div class="macros">
-    <div class="macros-head"><h3>Macros</h3>${
-      scaled?`<span class="scalepill no-print">scaled ${mult===0.5?'½':mult}×</span>`:''}</div>
+  return `<div class="macros${inTab?' in-tab':''}">
+    ${inTab
+      ? (scaled?`<div class="macros-head"><span class="scalepill no-print">scaled ${
+          mult===0.5?'½':mult}×</span></div>`:'')
+      : `<div class="macros-head"><h3>Macros</h3>${
+          scaled?`<span class="scalepill no-print">scaled ${mult===0.5?'½':mult}×</span>`:''}</div>`}
     <div class="colhead"><span class="a">Per serving</span>${
       batch?`<span class="b${scaled?' on':''}">All ${fmtMacro(batch, true)}</span>`:''}</div>
     ${hasMacro(m,'kcal')?`<div class="mkcal"><span class="nm">Calories</span>
@@ -2434,6 +2522,10 @@ function renderMacros(r, mult){
 
 /* ============ RECIPE DETAIL ============ */
 function setTab(t){ state.detailTab=t; state.showRecipeSubForm=false; renderMain(); }
+/* Which of the left column's two tabs is showing. Per-view rather than
+   per-recipe: opening a different recipe starts on Ingredients, because that is
+   what you want first almost every time. */
+function setIngTab(t){ state.ingTab=t; renderMain(); }
 function setScale(id,m){ state.scale[id]=m; renderMain(); }
 async function logCooked(id){
   try{
@@ -2781,6 +2873,8 @@ function viewDetail(){
   const nApplied=Object.keys(applied).length;
   const cover=coverImage(r);
   const onSubs=state.detailTab==='substitutions';
+  const hasMacros=anyMacros(r);
+  const onMacros=hasMacros && state.ingTab==='macros';
   const total=totalMinutes(r);
   return `
     <button class="back no-print" onclick="goto('browse')">← Back to recipes</button>
@@ -2812,13 +2906,31 @@ function viewDetail(){
 
     <div class="cook-cols">
       <div>
-        <div class="col-head">Ingredients
-          <span>${r.ingredients.length} item${r.ingredients.length===1?'':'s'}${
-            nApplied?` · ${nApplied} swapped`:''}</span></div>
-        ${renderIngredients(r,mult,applied)}
-        <button class="icon-btn no-print" style="width:100%;margin-top:12px;"
-          onclick="addRecipeToShoppingList('${r.id}')">🛒 Add all to shopping list</button>
-        ${renderMacros(r, mult)}
+        ${hasMacros
+          ? `<div class="col-tabs no-print">
+              <button class="tab ${onMacros?'':'active'}" onclick="setIngTab('ingredients')">Ingredients</button>
+              <button class="tab ${onMacros?'active':''}" onclick="setIngTab('macros')">Macros</button>
+              <span class="meta">${onMacros ? 'per serving'
+                : `${r.ingredients.length} item${r.ingredients.length===1?'':'s'}${
+                    nApplied?` · ${nApplied} swapped`:''}`}</span>
+            </div>`
+          : `<div class="col-head">Ingredients
+              <span>${r.ingredients.length} item${r.ingredients.length===1?'':'s'}${
+                nApplied?` · ${nApplied} swapped`:''}</span></div>`}
+        ${/* With macros, both panels stay in the DOM and the hidden one comes
+             back for print — the same trick the Instructions/Substitutions
+             pair uses. Without macros there are no tabs, so the ingredients are
+             not a panel at all and the markup is what it was before. */''}
+        ${hasMacros
+          ? `<div class="tab-panel ${onMacros?'is-hidden':''}">
+              ${renderIngredients(r,mult,applied)}
+              <button class="icon-btn no-print" style="width:100%;margin-top:12px;"
+                onclick="addRecipeToShoppingList('${r.id}')">🛒 Add all to shopping list</button>
+            </div>
+            <div class="tab-panel ${onMacros?'':'is-hidden'}">${renderMacros(r, mult, true)}</div>`
+          : `${renderIngredients(r,mult,applied)}
+             <button class="icon-btn no-print" style="width:100%;margin-top:12px;"
+               onclick="addRecipeToShoppingList('${r.id}')">🛒 Add all to shopping list</button>`}
       </div>
       <div>
         <div class="col-tabs no-print" id="recipeTabs">
@@ -3394,8 +3506,44 @@ function applyScanResult(res){
   const n=(res.flagged||[]).length;
   toast(n?`Recipe read — ${n} line${n!==1?'s':''} flagged for you to check.`:'Recipe read — please review before saving.');
 }
+/* Both of these throw work away and neither can be undone, so both name the
+   number they are about to remove and neither fires on the first click. */
+function confirmClearChecked(){
+  const n = shoppingList.filter(i=>i.checked).length;
+  if(!n) return;
+  showModal({
+    title:`Clear the ${n} thing${n===1?'':'s'} you have got?`,
+    body:`<p style="margin:0;">This removes ${n===1?'it':'them'} from the list for good. Anything you
+      still need is untouched.</p>`,
+    buttons:[
+      {label:'Cancel'},
+      {label:`Clear ${n}`, style:'danger', action:clearChecked},
+    ]
+  });
+}
 async function clearChecked(){
-  try{ await apiJSON('/api/shopping/clear-checked','POST'); render(); }catch(e){ apiError(e); }
+  try{ await apiJSON('/api/shopping/clear-checked','POST'); render(); toast('Cleared.'); }
+  catch(e){ apiError(e); }
+}
+function confirmClearAll(){
+  const n = shoppingList.length;
+  if(!n) return;
+  const got = shoppingList.filter(i=>i.checked).length;
+  showModal({
+    title:'Empty the whole list?',
+    body:`<p style="margin:0 0 10px;">This removes all <b>${n} item${n===1?'':'s'}</b>${
+      got?`, including the ${got} you have already got`:''}.</p>
+      <p style="margin:0;color:var(--dim);font-size:14px;">There is no undo — you would add the
+      recipes to the list again.</p>`,
+    buttons:[
+      {label:'Cancel'},
+      {label:`Delete all ${n}`, style:'danger', action:clearAllShopping},
+    ]
+  });
+}
+async function clearAllShopping(){
+  try{ await apiJSON('/api/shopping/clear-all','POST'); render(); toast('List emptied.'); }
+  catch(e){ apiError(e); }
 }
 function viewScanning(){
   const steps=['Reading the image','Finding ingredients and steps','Matching your substitutions library'];
@@ -4305,10 +4453,13 @@ function viewShopping(){
       <h1 class="title">Shopping List</h1>
       ${total?`<span class="progress"><b>${got.length}</b> of ${total} got
         <span class="pbar"><span style="width:${pct}%"></span></span></span>`:''}
-      ${open.length>1?`<div class="right no-print"><div class="segmented">
-        ${SHOP_VIEWS.map(v=>`<button class="${state.shopView===v.key?'on':''}"
-          onclick="setShopView('${v.key}')">${v.label}</button>`).join('')}
-      </div></div>`:''}
+      <div class="right no-print">
+        ${open.length>1?`<div class="segmented">
+          ${SHOP_VIEWS.map(v=>`<button class="${state.shopView===v.key?'on':''}"
+            onclick="setShopView('${v.key}')">${v.label}</button>`).join('')}
+        </div>`:''}
+        ${total?`<button class="icon-btn danger-soft" onclick="confirmClearAll()">🗑 Empty the list</button>`:''}
+      </div>
     </div>
     <div class="controls no-print">
       <div class="search-wrap" style="flex:2;"><input id="manualItem" type="text"
@@ -4320,7 +4471,6 @@ function viewShopping(){
         aria-label="Unit" onkeydown="if(event.key==='Enter'){event.preventDefault();addManualShopItem();}">
       <button class="icon-btn primary" onclick="addManualShopItem()">+ Add</button>
       <button class="icon-btn" onclick="window.print()">🖨️ Print list</button>
-      ${got.length?`<button class="icon-btn" onclick="clearChecked()">Clear checked</button>`:''}
     </div>
     ${total===0
       ? `<div class="empty">Your list is empty. Open a recipe and click "Add to list."</div>`
@@ -4336,7 +4486,10 @@ function viewShopping(){
       <div class="got-head" onclick="toggleShopGot()">${state.shopGotOpen?'▾':'▸'}
         <h2>Got it</h2>
         <span class="n">${got.length} item${got.length===1?'':'s'} · tap to ${
-          state.shopGotOpen?'fold away':'see them'}</span></div>
+          state.shopGotOpen?'fold away':'see them'}</span>
+        <button class="icon-btn sm danger-soft" onclick="event.stopPropagation(); confirmClearChecked()"
+          title="Remove everything in this section">🗑 Clear ${got.length===1
+            ? 'this one' : `these ${got.length}`}</button></div>
       ${state.shopGotOpen?`<div class="got-body">${got.map(it=>shopRow(it,{})).join('')}</div>`:''}
     </div>`:''}`;
 }
