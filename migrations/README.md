@@ -7,8 +7,8 @@ right. Running one a second time cannot damage anything — but two of the three
 kinds behave differently, and it is worth knowing which you are looking at
 before a red error message alarms you:
 
-- **`CREATE TABLE IF NOT EXISTS`** (004, 007) — runs cleanly however many times
-  you run it.
+- **`CREATE TABLE IF NOT EXISTS`** (004, 007, 011) — runs cleanly however many
+  times you run it.
 - **`INSERT ... WHERE NOT EXISTS`** (009) — runs cleanly too, and will not
   duplicate what it already inserted. Verified by running it twice against a
   copy of a real database.
@@ -39,6 +39,12 @@ There is no migration 001 — that was the original `schema.sql`.
 | 008 | `008-shopping.sql` | `sources` and `alt` on shopping items, so a merged row remembers every recipe that wants it and never converts one unit into another | update 15 |
 | 009 | `009-cook-dates.sql` | backfills `cook_events` from every dated rating | update 16 |
 | 010 | `010-macros.sql` | six nullable per-serving macro columns on `recipes` | update 17 |
+| 011 | `011-login-attempts.sql` | the `login_attempts` table, so the password gate can rate-limit guessing | update 20 |
+
+**011 is optional.** It is only read when `SITE_PASSWORD` is set. If the site is
+behind Cloudflare Access the table is never touched, and if you skip the
+migration the gate still works — the rate limiter fails open rather than locking
+you out of your own recipes.
 
 ## Two of these correct earlier mistakes
 

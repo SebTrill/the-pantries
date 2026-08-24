@@ -54,6 +54,91 @@ const err = (message, status = 400) => json({ error: message }, status);
 const uid = () =>
   crypto.randomUUID().replace(/-/g, '').slice(0, 12);
 
+/* ---------- what may be uploaded ----------
+ * Two lists, because a recipe photo has to be something the page can display,
+ * while a cookbook file may also be the PDF you scanned. The extension is taken
+ * from THIS table rather than from the filename or the browser's content-type,
+ * so a file called dinner.html cannot land in R2 still called dinner.html.
+ */
+const PHOTO_TYPES = {
+  'image/jpeg': 'jpg', 'image/pjpeg': 'jpg', 'image/png': 'png',
+  'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif',
+  'image/heic': 'heic', 'image/heif': 'heif',
+};
+const FILE_TYPES = { ...PHOTO_TYPES, 'application/pdf': 'pdf' };
+const MAX_PHOTO_BYTES = 12 * 1024 * 1024;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+const prettyBytes = (n) => `${Math.round(n / (1024 * 1024))} MB`;
+
+/**
+ * Decide whether an uploaded file is allowed, and on what terms.
+ * Returns either { error, status } or { type, ext } — never a half-checked file.
+ */
+function checkUpload(file, allowed, maxBytes) {
+  // "image/jpeg; charset=binary" is a content-type the browser really does send
+  const type = String(file.type || '').split(';')[0].trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(allowed, type)) {
+    return {
+      error: type
+        ? `${type} files can't be added here. Allowed: ${Object.keys(allowed).join(', ')}.`
+        : 'That file has no type the browser could name, so it was not added.',
+      status: 415,
+    };
+  }
+  const size = Number(file.size || 0);
+  if (size > maxBytes) {
+    return {
+      error: `That file is ${prettyBytes(size)}. The limit is ${prettyBytes(maxBytes)}.`,
+      status: 413,
+    };
+  }
+  if (size === 0) return { error: 'That file is empty.', status: 400 };
+  return { type, ext: allowed[type] };
+}
+
+/* ---------- response headers ----------
+ * 'unsafe-inline' is in script-src because the app renders its own HTML with
+ * onclick= handlers throughout and index.html sets the theme from an inline
+ * script before the stylesheet paints. Removing it means rewriting every
+ * handler, so what these headers actually buy is the rest: nothing may be
+ * loaded from, or sent to, a host that is not this one, and the page cannot be
+ * framed. An injected string still cannot phone home.
+ */
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "form-action 'self'",
+  "base-uri 'none'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+const SECURITY_HEADERS = {
+  'content-security-policy': CSP,
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'strict-origin-when-cross-origin',
+  'x-frame-options': 'DENY',
+  'strict-transport-security': 'max-age=31536000',
+};
+
+/** Statuses the fetch spec forbids a body on — rebuilding one with a body throws. */
+const BODILESS = new Set([101, 204, 205, 304]);
+
+function withSecurity(res) {
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
+  return new Response(BODILESS.has(res.status) ? null : res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+  });
+}
+
 const now = () => Date.now();
 const dayKey = (ts) => new Date(ts).toISOString().slice(0, 10);
 
@@ -241,9 +326,15 @@ function looksLikeEmoji(str) {
   const s = String(str || '').trim();
   if (!s) return false;
   if (/[a-z0-9]/i.test(s)) return false;
+  // the client prints emoji straight into markup, so nothing that can open a
+  // tag or close an attribute counts as one
+  if (/[<>&"'`\\/]/.test(s)) return false;
   const points = [...s];
   return points.length >= 1 && points.length <= 8;
 }
+
+/** The emoji a record gets saved with — theirs if it is one, the default if not. */
+const safeEmoji = (v, fallback) => (looksLikeEmoji(v) ? String(v).trim() : fallback);
 
 async function loadEmojiPalette(db) {
   const [custom, recipeUse, bookUse] = await Promise.all([
@@ -460,7 +551,7 @@ async function saveRecipe(db, body, existingId) {
   const id = existingId || uid();
   const ts = now();
   const title = String(body.title || '').trim() || 'Untitled Recipe';
-  const emoji = body.emoji || '🍽️';
+  const emoji = safeEmoji(body.emoji, '🍽️');
   const baseServings = parseQty(body.baseServings) || 1;
   const dateAdded = body.dateAdded || new Date().toISOString().slice(0, 10);
 
@@ -787,12 +878,60 @@ function mapLdNutrition(n) {
  * this becomes a no-op, so you can safely leave the secret in place.
  */
 
+/* Bump this to sign every logged-in browser out. The cookie is an HMAC of the
+   password over this string, so changing either one invalidates every cookie
+   already issued — that is the only revocation this gate has. */
+const COOKIE_VERSION = 2;
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 30;   // 30 days, not a year
+
+/* How hard someone may guess. Counted per IP, in a rolling window, and only
+   for wrong answers — getting it right clears the record. */
+const LOGIN_MAX_FAILS = 8;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
+
 async function signToken(password) {
   const key = await crypto.subtle.importKey(
     'raw', new TextEncoder().encode(password),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('the-pantries-v1'));
+  const sig = await crypto.subtle.sign(
+    'HMAC', key, new TextEncoder().encode(`the-pantries-v${COOKIE_VERSION}`));
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* The counter lives in D1 rather than in memory because a Worker isolate is
+   discarded between requests — an in-memory count would reset itself for the
+   attacker. Every one of these fails open: if the table is missing because the
+   database predates migration 011, you can still log in. */
+async function loginLock(db, ip) {
+  try {
+    const row = await db.prepare('SELECT blocked_until FROM login_attempts WHERE ip=?')
+      .bind(ip).first();
+    const until = row ? Number(row.blocked_until || 0) : 0;
+    return until > now() ? Math.ceil((until - now()) / 1000) : 0;
+  } catch (e) { return 0; }
+}
+
+async function noteLoginFail(db, ip) {
+  try {
+    const ts = now();
+    const row = await db.prepare(
+      'SELECT fails, first_at FROM login_attempts WHERE ip=?').bind(ip).first();
+    const fresh = !row || ts - Number(row.first_at || 0) > LOGIN_WINDOW_MS;
+    const fails = fresh ? 1 : Number(row.fails || 0) + 1;
+    const firstAt = fresh ? ts : Number(row.first_at);
+    const lock = fails >= LOGIN_MAX_FAILS ? ts + LOGIN_LOCK_MS : 0;
+    await db.prepare(
+      `INSERT INTO login_attempts (ip, fails, first_at, blocked_until) VALUES (?,?,?,?)
+       ON CONFLICT(ip) DO UPDATE SET fails=?, first_at=?, blocked_until=?`
+    ).bind(ip, fails, firstAt, lock, fails, firstAt, lock).run();
+    return fails;
+  } catch (e) { return 0; }
+}
+
+async function clearLoginFails(db, ip) {
+  try { await db.prepare('DELETE FROM login_attempts WHERE ip=?').bind(ip).run(); }
+  catch (e) { /* nothing to clear */ }
 }
 
 /** Constant-time compare so a wrong guess can't be narrowed down by timing. */
@@ -848,17 +987,35 @@ async function gate(request, env, url) {
   const expected = await signToken(env.SITE_PASSWORD);
 
   if (url.pathname === '/__login' && request.method === 'POST') {
+    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    const wait = await loginLock(env.DB, ip);
+    if (wait) {
+      const mins = Math.ceil(wait / 60);
+      return new Response(
+        LOGIN_PAGE(`Too many tries. Try again in ${mins} minute${mins === 1 ? '' : 's'}.`), {
+          status: 429,
+          headers: { 'content-type': 'text/html; charset=utf-8', 'retry-after': String(wait) },
+        });
+    }
     const form = await request.formData();
-    if (String(form.get('password') || '') === env.SITE_PASSWORD) {
+    if (safeEqual(String(form.get('password') || ''), String(env.SITE_PASSWORD))) {
+      await clearLoginFails(env.DB, ip);
       return new Response(null, {
         status: 302,
         headers: {
           location: '/',
-          'set-cookie': `pantry_auth=${expected}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`,
+          'set-cookie': `pantry_auth=${expected}; Path=/; HttpOnly; Secure; ` +
+                        `SameSite=Lax; Max-Age=${COOKIE_MAX_AGE}`,
         },
       });
     }
-    return new Response(LOGIN_PAGE('That password is not right.'), {
+    const fails = await noteLoginFail(env.DB, ip);
+    const left = LOGIN_MAX_FAILS - fails;
+    return new Response(LOGIN_PAGE(
+      fails >= LOGIN_MAX_FAILS
+        ? 'Too many tries. Locked for 15 minutes.'
+        : `That password is not right.${left > 0 && left <= 3
+            ? ` ${left} attempt${left === 1 ? '' : 's'} left.` : ''}`), {
       status: 401, headers: { 'content-type': 'text/html; charset=utf-8' },
     });
   }
@@ -873,9 +1030,14 @@ async function gate(request, env, url) {
   });
 }
 
-/* ---------- router ---------- */
+/* ---------- router ----------
+ * Everything routes through `router`, and the exported fetch does nothing but
+ * add the security headers to whatever comes back. Keeping the wrapper on the
+ * outside is the point: there is no return path inside the router — including
+ * the login page, an R2 stream and the 500 handler — that can skip them.
+ */
 
-export default {
+const router = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -1057,10 +1219,11 @@ export default {
           const form = await request.formData();
           const file = form.get('file');
           if (!file || typeof file === 'string') return err('No file uploaded');
-          const ext = (file.type.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '');
-          const key = `${id}/${uid()}.${ext}`;
+          const ok = checkUpload(file, PHOTO_TYPES, MAX_PHOTO_BYTES);
+          if (ok.error) return err(ok.error, ok.status);
+          const key = `${id}/${uid()}.${ok.ext}`;
           await env.PHOTOS.put(key, file.stream(), {
-            httpMetadata: { contentType: file.type || 'image/jpeg' },
+            httpMetadata: { contentType: ok.type },
           });
           const existing = await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE recipe_id=?')
             .bind(id).first();
@@ -1121,7 +1284,7 @@ export default {
         ).bind(id, title, String(b.author || '').trim(), String(b.publisher || '').trim(),
           String(b.published || '').trim(), String(b.edition || '').trim(),
           String(b.isbn || '').trim(), String(b.notes || '').trim(),
-          b.emoji || '📕', ts, ts).run();
+          safeEmoji(b.emoji, '📕'), ts, ts).run();
         return json({ id, ...(await bootstrap(db)) }, 201);
       }
 
@@ -1140,7 +1303,7 @@ export default {
           ).bind(title, String(b.author || '').trim(), String(b.publisher || '').trim(),
             String(b.published || '').trim(), String(b.edition || '').trim(),
             String(b.isbn || '').trim(), String(b.notes || '').trim(),
-            b.emoji || '📕', now(), bid).run();
+            safeEmoji(b.emoji, '📕'), now(), bid).run();
           return json(await bootstrap(db));
         }
 
@@ -1161,11 +1324,15 @@ export default {
           const form = await request.formData();
           const file = form.get('file');
           if (!file || typeof file === 'string') return err('No file uploaded');
-          const type = file.type || 'application/octet-stream';
+          const ok = checkUpload(file, FILE_TYPES, MAX_FILE_BYTES);
+          if (ok.error) return err(ok.error, ok.status);
+          const type = ok.type;
           const isPhoto = type.startsWith('image/');
-          const name = String(form.get('filename') || file.name || 'file');
-          const ext = (name.split('.').pop() || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8);
-          const key = `cookbooks/${bid}/${uid()}.${ext}`;
+          // the filename is kept for display only, stripped of anything that
+          // would let it act as a path when it comes back out of the download
+          const name = String(form.get('filename') || file.name || 'file')
+            .replace(/[\\/\r\n"]/g, '').trim().slice(0, 160) || 'file';
+          const key = `cookbooks/${bid}/${uid()}.${ok.ext}`;
           await env.PHOTOS.put(key, file.stream(), { httpMetadata: { contentType: type } });
           const existing = await db.prepare(
             "SELECT COUNT(*) AS n FROM cookbook_files WHERE cookbook_id=? AND kind='photo'"
@@ -1432,5 +1599,11 @@ export default {
       console.error('Unhandled error:', e && e.stack ? e.stack : e);
       return err(`Server error: ${e && e.message ? e.message : String(e)}`, 500);
     }
+  },
+};
+
+export default {
+  async fetch(request, env, ctx) {
+    return withSecurity(await router.fetch(request, env, ctx));
   },
 };

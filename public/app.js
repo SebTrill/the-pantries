@@ -435,8 +435,14 @@ function storeLink(store,item){
   const q=encodeURIComponent(item);
   return {amazon:`https://www.amazon.com/s?k=${q}`,target:`https://www.target.com/s?searchTerm=${q}`,walmart:`https://www.walmart.com/search?q=${q}`}[store];
 }
-function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escA(s){ return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+/* Both of these escape the same five characters now. They stayed different for
+   a long time — esc() skipped quotes because it was "for text", escA() skipped
+   > because it was "for attributes" — and that only holds while every caller
+   uses the right one. A recipe title goes into both, so they are now safe in
+   either place and the choice between them no longer matters. */
+const ESCAPES = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' };
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>ESCAPES[c]); }
+function escA(s){ return esc(s); }
 
 /* ============ MODAL + TOAST ============ */
 let modalCfg=null;
@@ -1200,7 +1206,7 @@ function viewHome(){
               <span class="rank ${i<3?'gold':''}">${i+1}</span>
               <div style="min-width:0;flex:1;">
                 <button class="feed-link" onclick="openRecipe('${r.id}')">${esc(r.title)}</button>
-                <div class="cats">${r.categories.join(' · ')}</div>
+                <div class="cats">${r.categories.map(esc).join(' · ')}</div>
                 <div class="top-bar"><span style="width:${Math.round((r.timesCooked||0)/topMax*100)}%"></span></div>
                 <div class="tmeta">${r.ratings.length?`★ ${avgRating(r).toFixed(1)} (${r.ratings.length})`:'unrated'} · 👨‍🍳 ${r.timesCooked}×</div>
               </div>
@@ -1717,10 +1723,22 @@ function confirmDeleteCookbook(id){
     ]
   });
 }
+/* The server decides what may be stored — these two only exist so a rejected
+   file says so before it spends a minute uploading. Keep them in step with
+   FILE_TYPES and MAX_FILE_BYTES in src/index.js. */
+const UPLOAD_OK=['image/jpeg','image/pjpeg','image/png','image/webp','image/gif',
+  'image/avif','image/heic','image/heif','application/pdf'];
+const UPLOAD_MAX=25*1024*1024;
+
 async function handleBookUpload(ev,bookId){
   const files=[...ev.target.files];
   ev.target.value='';
   if(!files.length) return;
+  const bad=files.find(f=>!UPLOAD_OK.includes((f.type||'').split(';')[0].toLowerCase()));
+  if(bad){ toast(`"${bad.name}" is not a photo or PDF, so it was not added.`); return; }
+  // photos are shrunk below, so the cap only really bites on documents
+  const big=files.find(f=>!f.type.startsWith('image/') && f.size>UPLOAD_MAX);
+  if(big){ toast(`"${big.name}" is larger than 25 MB.`); return; }
   setBusy(true);
   try{
     for(const f of files){
@@ -4045,7 +4063,7 @@ function renderSubGroup(g){
   const n = g.recipes.length;
   const onlyLocal = g.entries.every(e => e.scope === 'recipe');
   const applies = n === 0
-    ? `No recipe uses ${g.name.toLowerCase()} yet`
+    ? `No recipe uses ${esc(g.name.toLowerCase())} yet`
     : `${open ? '▾' : '▸'} Applies to ${n} recipe${n===1?'':'s'}`;
   return `<div class="ing-group${onlyLocal?' local':''}${n===0?' idle':''}">
     <div class="ig-head">

@@ -91,6 +91,14 @@ CREATE TABLE IF NOT EXISTS shopping_items (
   created_at  INTEGER NOT NULL
 );
 
+-- Wrong guesses at the site password, counted per IP.
+CREATE TABLE IF NOT EXISTS login_attempts (
+  ip            TEXT PRIMARY KEY,
+  fails         INTEGER NOT NULL DEFAULT 0,
+  first_at      INTEGER NOT NULL,
+  blocked_until INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_ingredients_recipe   ON ingredients(recipe_id, position);
 CREATE INDEX IF NOT EXISTS idx_instructions_recipe  ON instructions(recipe_id, position);
 CREATE INDEX IF NOT EXISTS idx_ratings_recipe       ON ratings(recipe_id, created_at DESC);
