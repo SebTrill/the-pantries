@@ -160,6 +160,15 @@ CREATE TABLE IF NOT EXISTS emoji_palette (
   PRIMARY KEY (kind, emoji)
 );
 
+-- Wrong guesses at the site password, counted per IP. Only written when
+-- SITE_PASSWORD is set; a site behind Cloudflare Access never uses it.
+CREATE TABLE IF NOT EXISTS login_attempts (
+  ip            TEXT PRIMARY KEY,
+  fails         INTEGER NOT NULL DEFAULT 0,
+  first_at      INTEGER NOT NULL,
+  blocked_until INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_ingredients_recipe   ON ingredients(recipe_id, position);
 CREATE INDEX IF NOT EXISTS idx_instructions_recipe  ON instructions(recipe_id, position);
 CREATE INDEX IF NOT EXISTS idx_ratings_recipe       ON ratings(recipe_id, created_at DESC);

@@ -112,6 +112,62 @@ header first. If it is present, the password gate is skipped entirely. If Access
 removed, the password gate automatically takes over again — so there is no window where
 the site sits unprotected.
 
+**Guessing the password is rate limited.** Eight wrong answers from one IP inside fifteen
+minutes locks that IP out for fifteen more, and the right password does not shortcut the
+lockout. The counter lives in the `login_attempts` table rather than in memory, because a
+Worker isolate is thrown away between requests and an in-memory count would reset itself
+for whoever was guessing. If that table is missing — a database that predates migration
+011 — the limiter fails open rather than locking you out of your own recipes.
+
+**Signing every browser out** means bumping `COOKIE_VERSION` in `src/index.js` and
+redeploying. The cookie is an HMAC of the site password over that version string, so
+changing either one invalidates every cookie already issued. That is the only revocation
+this gate has; cookies otherwise last thirty days.
+
+---
+
+## What the Worker does to every response
+
+`src/index.js` exports a `fetch` that does nothing except call the router and pass the
+result through `withSecurity()`. The wrapper is on the outside deliberately: there is no
+return path inside the router — not the login page, not an R2 photo stream, not the 500
+handler — that can quietly skip the headers.
+
+| Header | Value |
+|---|---|
+| `content-security-policy` | `default-src 'self'` plus the directives below |
+| `x-content-type-options` | `nosniff` |
+| `referrer-policy` | `strict-origin-when-cross-origin` |
+| `x-frame-options` | `DENY` |
+| `strict-transport-security` | `max-age=31536000` |
+
+**The CSP includes `'unsafe-inline'` for scripts, and that is not an oversight.** The app
+renders its own HTML with `onclick=` handlers throughout, and `index.html` sets the theme
+from an inline script before the stylesheet paints. Dropping `'unsafe-inline'` means
+rewriting every handler in `app.js`. What the policy still buys is the rest of it:
+`connect-src 'self'` and `default-src 'self'` mean nothing can be loaded from — or sent
+to — a host that is not this one, `object-src 'none'` and `base-uri 'none'` close two
+classic injection routes, and `frame-ancestors 'none'` means the site cannot be framed.
+Injected markup that cannot phone home is a great deal less useful.
+
+**Uploads are checked against a list, not a pattern.** `PHOTO_TYPES` is the set a recipe
+photo may be (jpeg, png, webp, gif, avif, heic, heif) and `FILE_TYPES` adds PDF for
+cookbook scans. The stored extension is looked up in that table rather than taken from the
+filename or the browser's content-type, so a file called `dinner.html` cannot land in R2
+still called `dinner.html`. SVG is deliberately absent: it is an image that can carry
+script. Photos cap at 12 MB, files at 25 MB, and an empty file is refused outright. The
+client checks the same rules before uploading, but only so the message arrives sooner —
+the Worker is what enforces them.
+
+**Everything a person typed is escaped at the point it is rendered.** `esc()` and `escA()`
+in `app.js` now escape the same five characters and are interchangeable; they used to
+differ, which only ever worked while every caller reached for the right one. Emoji are
+validated server-side by `looksLikeEmoji()` on save, because the client prints them into
+markup without escaping and a field that only ever holds an emoji should be made to hold
+one. Imported recipes matter most here: `/api/import` reads JSON-LD from a page nobody
+here wrote, and `security-test.js` covers that path end to end by serving a hostile page
+to the Worker and then rendering what came back.
+
 ---
 
 ## Working on it locally
