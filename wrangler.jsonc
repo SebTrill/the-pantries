@@ -18,7 +18,6 @@
     {
       "binding": "DB",
       "database_name": "pantries-db",
-      // Replaced with the real id at deploy time by `wrangler d1 create pantries-db`
       "database_id": "4595c016-f5f0-4cc6-b629-9ae4e92dcc62"
     }
   ],
@@ -34,19 +33,54 @@
     "enabled": true
   },
 
+  // The one hostname the site is served from. Every other hostname attached to
+  // the Worker below is 308'd here before the password gate runs, so there is
+  // only ever one hostname for Cloudflare Access to protect.
+  //
+  // Not a secret — it's a public domain name, which is why it lives here rather
+  // than in `wrangler secret put`. Fork this repo and change it to your own
+  // domain; delete it and the redirect turns itself off.
+  "vars": {
+    "CANONICAL_HOST": "the-pantries.com"
+  },
+
+  // The *.workers.dev hostname is switched off. It is not a hostname Cloudflare
+  // Access can protect, so the Access shortcut in src/index.js — which skips the
+  // password gate whenever a Cf-Access-Authenticated-User-Email header is present
+  // — could be walked straight past there by anyone who simply sends that header.
+  // With workers_dev off, the site answers only on the custom domain below, where
+  // that header can only come from Access itself.
+  //
+  // Turning this back on (for a preview, say) re-opens that bypass unless the gate
+  // is changed to verify the Cf-Access-Jwt-Assertion JWT instead of the email header.
   "workers_dev": false,
+
+  // Version Preview URLs — <version-or-alias>-the-pantries.<subdomain>.workers.dev —
+  // are a separate setting from workers_dev, and they are workers.dev hostnames, so
+  // Access cannot protect them either.
+  //
+  // Since Wrangler 4.44 an *unset* preview_urls inherits workers_dev, so false would
+  // be the default here. It is written out anyway: that inheritance only applies when
+  // the setting has never been configured, so a preview URL enabled once in the
+  // dashboard or by an older Wrangler stays enabled and the default never reclaims it.
+  // Stating it explicitly means the config decides, not deploy history.
   "preview_urls": false,
+
+  // the-pantries.com is registered and active, so it serves the site.
+  //
+  // www is attached to the Worker too, otherwise it would return a Cloudflare
+  // 1016 rather than reaching anything. It does not serve the site: it is 308'd
+  // to CANONICAL_HOST above before the gate runs.
+  //
+  // Any hostname added here that is not CANONICAL_HOST is redirected, not served.
+  // If you ever want one to serve the site for real, change CANONICAL_HOST — and
+  // add that hostname to your Access policy, or it becomes an unprotected way in.
   "routes": [
-    { "pattern": "the-pantries.com", "custom_domain": true }
+    { "pattern": "the-pantries.com", "custom_domain": true },
+    { "pattern": "www.the-pantries.com", "custom_domain": true }
   ]
 
   // Secrets are NOT stored here. Set them once with:
   //   npx wrangler secret put ANTHROPIC_API_KEY
-  //
-  // STEP 2 of deploying: once the-pantries.com is registered and active in your
-  // Cloudflare account, uncomment BOTH lines below and run `npm run deploy` again.
-  // Until then the site lives at the-pantries.<your-subdomain>.workers.dev.
-  // ,"routes": [
-  //   { "pattern": "the-pantries.com", "custom_domain": true }
-  // ]
+  //   npx wrangler secret put SITE_PASSWORD
 }
