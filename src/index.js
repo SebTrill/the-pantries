@@ -872,6 +872,39 @@ function mapLdNutrition(n) {
   };
 }
 
+/* ---------- one canonical hostname ----------
+ * Every hostname attached to this Worker is another hostname a Cloudflare Access
+ * policy has to be configured to cover — and a hostname Access misses is one where
+ * the Cf-Access-Authenticated-User-Email shortcut in gate() can be walked straight
+ * past by anyone who simply sends that header. That is what made *.workers.dev
+ * unsafe, and it applies equally to www and to any alias added later.
+ *
+ * So: if CANONICAL_HOST is set, the site is served from that hostname and nothing
+ * else. Anything else attached to the Worker gets a 308 here, before the gate, the
+ * database, or any asset is touched.
+ *
+ * Set it in wrangler.jsonc under "vars". Leaving it unset disables this entirely,
+ * which is the right default for anyone who forks this repo and deploys it on their
+ * own domain — an unset value must never mean "redirect to somebody else's site".
+ */
+const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1']);
+
+function canonicalRedirect(request, env, url) {
+  const canonical = String(env.CANONICAL_HOST || '').trim().toLowerCase();
+  if (!canonical) return null;                         // not configured — no-op
+
+  // The Host header is what the client actually asked for. On Cloudflare it can
+  // only be a hostname routed to this Worker, so it is safe to compare against;
+  // it is never used to *build* the redirect target, which is a fixed constant.
+  const host = String(request.headers.get('host') || url.hostname)
+    .split(':')[0].toLowerCase();
+
+  if (host === canonical || DEV_HOSTS.has(host)) return null;
+
+  // 308 rather than 301: the method and body of an API call survive the redirect.
+  return Response.redirect(`https://${canonical}${url.pathname}${url.search}`, 308);
+}
+
 /* ---------- interim password gate ----------
  * Only active when the SITE_PASSWORD secret is set AND the request did not come
  * through Cloudflare Access. Once Access protects the hostname it takes over and
@@ -1045,6 +1078,9 @@ const router = {
     const db = env.DB;
 
     try {
+      const canon = canonicalRedirect(request, env, url);
+      if (canon) return canon;
+
       const blocked = await gate(request, env, url);
       if (blocked) return blocked;
 
